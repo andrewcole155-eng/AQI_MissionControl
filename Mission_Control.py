@@ -98,20 +98,21 @@ def init_alpaca():
 @st.cache_data(ttl=30)
 def fetch_timescaledb_telemetry():
     """Fetches execution reality directly from TimescaleDB, bypassing slow Alpaca order loops."""
+    # Only attempt connection if TimescaleDB credentials are explicitly provided in secrets
+    if 'timescaledb' not in st.secrets or not st.secrets["timescaledb"].get("HOST"):
+        return pd.DataFrame()
+
     try:
         import psycopg2
-        # Auto-detect Docker DNS vs Localhost
-        db_host = os.environ.get("DB_HOST", "localhost")
-        if 'timescaledb' in st.secrets:
-            db_host = st.secrets["timescaledb"].get("HOST", db_host)
-            
+        db_host = st.secrets["timescaledb"]["HOST"]
+        
         conn = psycopg2.connect(
             host=db_host,
-            port=os.environ.get("DB_PORT", "5432"),
-            user=os.environ.get("DB_USER", "aqi_admin"),
-            password=os.environ.get("AQI_DB_PASSWORD", "aqi_secure_db_pass_2026"),
-            dbname=os.environ.get("DB_NAME", "aqi_telemetry"),
-            connect_timeout=3  # Must be set to release execution to the Alpaca fallback
+            port=st.secrets["timescaledb"].get("PORT", "5432"),
+            user=st.secrets["timescaledb"].get("USER", "aqi_admin"),
+            password=st.secrets["timescaledb"].get("PASSWORD", "aqi_secure_db_pass_2026"),
+            dbname=st.secrets["timescaledb"].get("DB_NAME", "aqi_telemetry"),
+            connect_timeout=3
         )
         
         query = """
@@ -127,7 +128,6 @@ def fetch_timescaledb_telemetry():
         if not df_ex.empty:
             df_ex['Result'] = df_ex['PnL (%)'].apply(lambda x: 'Win' if x > 0 else 'Loss')
             df_ex['Entry_Price'] = df_ex['Exit_Price'] / (1 + (df_ex['PnL (%)']/100))
-            # Proxies for the scatter plot to prevent breaks until YF integration is ported
             df_ex['MAE (%)'] = np.minimum(df_ex['PnL (%)'], 0) - abs(df_ex['Slippage (%)'])
             df_ex['MFE (%)'] = np.maximum(df_ex['PnL (%)'], 0) + abs(df_ex['Slippage (%)'])
             
