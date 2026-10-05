@@ -111,7 +111,7 @@ def fetch_timescaledb_telemetry():
             user=os.environ.get("DB_USER", "aqi_admin"),
             password=os.environ.get("AQI_DB_PASSWORD", "aqi_secure_db_pass_2026"),
             dbname=os.environ.get("DB_NAME", "aqi_telemetry"),
-            connect_timeout=3  # <--- FIX: Prevents infinite app hangs if DB is unreachable
+            connect_timeout=3  # Must be set to release execution to the Alpaca fallback
         )
         
         query = """
@@ -671,9 +671,10 @@ def get_correlation_matrix(tickers):
 def get_system_telemetry():
     try:
         start = time.time()
-        requests.get("https://api.alpaca.markets/v2/clock", timeout=2)
+        requests.get("https://api.alpaca.markets/v2/clock", timeout=1.5)
         latency = int((time.time() - start) * 1000)
-    except: latency = 999
+    except Exception:
+        latency = 999
     return 0.0, 0.0, latency
 
 def calculate_drawdown(df):
@@ -1244,7 +1245,6 @@ with st.sidebar:
 api = init_alpaca()
 if not api: st.stop()
 
-# 1. Signature updated: live_cash_flows removed from Alpaca payload
 account, positions, orders = get_account_data(api)
 
 # --- REPLACE ALPACA EXCURSIONS WITH TIMESCALEDB ---
