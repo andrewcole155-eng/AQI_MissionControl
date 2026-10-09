@@ -2274,13 +2274,38 @@ with tab3:
                 today_norm = pd.Timestamp.now().normalize()
                 display_df = proj_df[proj_df['Date'] >= today_norm].copy()
                 
-                st.dataframe(display_df, width="stretch", hide_index=True, column_config={"Date": st.column_config.DatetimeColumn(format="YYYY-MM"), "Base (No Deposits)": st.column_config.NumberColumn("Base Target", format="$%.0f"), "Base (+3% Inflation)": st.column_config.NumberColumn("Base (+3% Infl)", format="$%.0f"), "+$70/wk": st.column_config.NumberColumn("+$70/wk", format="$%.0f"), "+$70/wk (+3% Inflation)": None, "+$140/wk": st.column_config.NumberColumn("+$140/wk Target", format="$%.0f"), "+$140/wk (+3% Inflation)": st.column_config.NumberColumn("+$140/wk (+3% Infl)", format="$%.0f")}, height=220)
+                st.dataframe(
+                    display_df, 
+                    width="stretch", 
+                    hide_index=True, 
+                    column_config={
+                        "Date": st.column_config.DateColumn(format="YYYY-MM-DD"), 
+                        "Base (No Deposits)": st.column_config.NumberColumn("Base Target", format="$%.0f"), 
+                        "Base (+3% Inflation)": st.column_config.NumberColumn("Base (+3% Infl)", format="$%.0f"), 
+                        "+$70/wk": st.column_config.NumberColumn("+$70/wk", format="$%.0f"), 
+                        "+$70/wk (+3% Inflation)": None, 
+                        "+$140/wk": st.column_config.NumberColumn("+$140/wk Target", format="$%.0f"), 
+                        "+$140/wk (+3% Inflation)": st.column_config.NumberColumn("+$140/wk (+3% Infl)", format="$%.0f")
+                    }, 
+                    height=220
+                )
 
         st.divider()
         st.markdown("### 🎲 Monte Carlo Risk Simulation (Sequence of Returns)")
-        st.caption("Bootstraps your actual historical daily returns to project 500 possible 20-year futures. This simulates 'Sequence of Returns Risk' (what happens if your losses cluster early vs. late). Visualized for the +$140/wk scenario.")
+        st.caption("Bootstraps historical daily returns and applies sequence variance to project 500 possible 20-year futures. The return distribution is mean-centered to mathematically align with your selected forecast baseline.")
         
-        mc_returns = hist_df_adj['daily_return'].dropna().values
+        # --- MONTE CARLO ALIGNMENT ---
+        # 1. Select the base historical returns corresponding to the chosen regime
+        if cagr_source == "28-Day Regime (Recent)" and not hist_28d.empty:
+            base_returns = hist_28d['daily_return'].dropna().values
+        else:
+            base_returns = hist_df_adj['daily_return'].dropna().values
+            
+        # 2. Mathematically shift the distribution mean to perfectly align with the target projection CAGR
+        target_daily_mean = ((1 + projection_rate) ** (1 / 252)) - 1
+        current_mean = np.mean(base_returns) if len(base_returns) > 0 else 0
+        mc_returns = base_returns - current_mean + target_daily_mean
+
         mc_df = run_monte_carlo_simulation(mc_returns, current_equity_raw, weekly_deposit=140, years=20, paths=500)
         
         if not mc_df.empty:
