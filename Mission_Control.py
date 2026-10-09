@@ -1987,7 +1987,7 @@ with tab3:
                     "TARGET": st.column_config.TextColumn("Institutional Benchmark / Target Range", width="large"),
                     "VERDICT_28D": st.column_config.TextColumn("28D Assessment", width="small"),
                 },
-                height=720
+                height=880  # <-- FIX: Increased height to reveal hidden rows
             )
 
             # --- ENHANCED AI DIRECTOR TELEMETRY OVERVIEW & QUANT MEMO ---
@@ -2014,6 +2014,11 @@ with tab3:
             exp_28d_val = metrics_28d.get('Expectancy', 0.0)
             pf_28d_val = metrics_28d.get('Profit Factor', 0.0)
             c28 = metrics_28d.get('CAGR', 0.0)
+
+            # <-- FIX: Calculate turnover specifically for the HTML summary
+            trl_all = metrics.get('Track Record (Months)', 0.0)
+            years_active_var = trl_all / 12.0 if trl_all > 0 else 1.0
+            turnover_all = trades_all / years_active_var
 
             # High-level regime narrative synthesis
             if c28 > 0.20:
