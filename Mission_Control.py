@@ -735,7 +735,12 @@ def calculate_advanced_metrics(hist_df, df_ex=None):
     mar = (cagr / abs(max_dd)) if max_dd < 0 else 0.0
     
     # Calmar Ratio: Strictly proxying 3-Year CAGR / 3-Year Max Drawdown
-    calmar = mar if years_active <= 3 else (cagr / abs(((df['equity'].tail(252*3) - df['peak'].tail(252*3)) / df['peak'].tail(252*3)).min())) if max_dd < 0 else 0.0
+    if years_active <= 3:
+        calmar = mar
+    else:
+        recent_peak = df['peak'].tail(252*3)
+        recent_dd = ((df['equity'].tail(252*3) - recent_peak) / recent_peak).min()
+        calmar = (cagr / abs(recent_dd)) if recent_dd < 0 else 0.0
     
     # RoMD (Return over Max Drawdown): Absolute Return / Drawdown (Prevents annualization distortion on short horizons)
     romd = (total_return / abs(max_dd)) if max_dd < 0 else 0.0
@@ -955,10 +960,15 @@ def create_scorecard_df(metrics_all, hit_rate_all, trades_all, metrics_28d, hit_
 def calculate_institutional_score(metrics):
     score = 0
     trades = metrics.get('Trades Taken', 0)
+    months_active = metrics.get('Track Record (Months)', 0)
     
-    # Floor bound ensures negative ratios contribute 0 rather than deducting from the total
+    # Floor bound ensures negative ratios contribute 0 rather than deducting
     score += max(0, min(30, (metrics.get('Sharpe Ratio', 0) / 2.0) * 30))
-    score += max(0, min(25, (metrics.get('MAR Ratio', 0) / 1.0) * 25))
+    
+    # Switch to unannualized RoMD instead of MAR if the window is under 1 year
+    efficiency_ratio = metrics.get('RoMD', 0) if months_active < 12 else metrics.get('MAR Ratio', 0)
+    score += max(0, min(25, (efficiency_ratio / 1.0) * 25))
+    
     score += max(0, min(20, (metrics.get('Sortino Ratio', 0) / 3.0) * 20))
     
     # Capital preservation points only awarded if the system is actively risking capital
