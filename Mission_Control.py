@@ -2015,8 +2015,10 @@ with tab3:
             exp_28d_val = metrics_28d.get('Expectancy', 0.0)
             pf_28d_val = metrics_28d.get('Profit Factor', 0.0)
             c28 = metrics_28d.get('CAGR', 0.0)
+            sqn_28 = metrics_28d.get('SQN', 0.0)
 
             trl_all = metrics.get('Track Record (Months)', 0.0)
+            dur_all = metrics.get('Max Drawdown Duration', 0)
             years_active_var = trl_all / 12.0 if trl_all > 0 else 1.0
             turnover_all = trades_all / years_active_var
 
@@ -2038,7 +2040,27 @@ with tab3:
             else:
                 psr_narrative = f"🛡️ <strong>Canary Gate (PSR {avg_psr:.1%}):</strong> Below the 35.0% promotion threshold. Challenger models quarantined in Shadow Fleet mode to protect production capital."
 
-            # <-- FIX: Added .replace('\n', '') to completely flatten the HTML string for Streamlit
+            # --- NEW: Dynamic Vulnerability / Improvement Logic ---
+            improvement_bullets = []
+            
+            if avg_mmd > 0.05:
+                improvement_bullets.append(f"<li><strong>Multivariate Feature Drift (MMD at {avg_mmd:.4f}):</strong> Exceeds the 0.05 threshold. While adaptive, high drift indicates the model's operating environment has structurally diverged from its baseline. Monitor for degradation.</li>")
+            
+            if dur_all > 90:
+                improvement_bullets.append(f"<li><strong>Time-to-Recovery ({dur_all} Days):</strong> The system spent over a quarter underwater during its maximum drawdown. Institutional allocators typically prefer recovery windows under 90 days to minimize capital lockup.</li>")
+            
+            if sqn_28 < 1.6:
+                improvement_bullets.append(f"<li><strong>Short-Term Edge Consistency (28D SQN {sqn_28:.2f}):</strong> While lifetime system quality is robust, the recent 28-day window shows a drop in trade-by-trade edge consistency relative to variance (Target &gt; 1.6).</li>")
+                
+            if trl_all < 24:
+                improvement_bullets.append(f"<li><strong>Track Record Immaturity ({trl_all:.1f} Months):</strong> Tier-1 allocators require a minimum of 24-36 months of live telemetry to validate survival across shifting macroeconomic interest rate cycles.</li>")
+            
+            if not improvement_bullets:
+                improvement_bullets.append("<li><strong>System performing optimally across all primary constraints.</strong> Continue standard monitoring.</li>")
+                
+            improvement_html = "".join(improvement_bullets)
+
+            # HTML string flattened to prevent Markdown code-block rendering
             overview_html = f"""
             <div style="background-color: #1e1e1e; padding: 18px; border-radius: 8px; border-left: 5px solid #569cd6; margin-top: 18px; border: 1px solid #333;">
                 <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #333; padding-bottom: 8px; margin-bottom: 12px;">
@@ -2066,11 +2088,17 @@ with tab3:
                         <li><strong>Expected Shortfall (CVaR 95% at {cvar_all_val:.2f}%):</strong> Average tail-risk on worst-case sessions remains strictly bounded within quantitative risk limits.</li>
                     </ul>
                 </div>
-                <div>
+                <div style="margin-bottom: 12px;">
                     <strong style="color: #dcdcaa; font-size: 13.5px; text-transform: uppercase; letter-spacing: 0.5px;">3. Execution Mechanics & Edge Durability</strong>
                     <ul style="margin: 6px 0 0 0; padding-left: 20px; color: #cccccc; font-size: 13px; line-height: 1.6;">
                         <li><strong>Hit Rate ({hit_rate_28d:.0%} 28D | {hit_rate_all:.0%} Lifetime) &amp; Expectancy ({exp_all_val:+.2%} to {exp_28d_val:+.2%}):</strong> Classic positive-skew momentum profile. Pair with a <strong>{pf_28d_val:.2f} Profit Factor</strong>, ensuring average winners decisively absorb stopped positions.</li>
                         <li><strong>Turnover ({turnover_all:.1f} trades/yr | {trades_28d} in 28D):</strong> Friction-optimized trade frequency across the 12-ticker universe, preserving liquidity without commission decay.</li>
+                    </ul>
+                </div>
+                <div style="margin-bottom: 0px;">
+                    <strong style="color: #ffb000; font-size: 13.5px; text-transform: uppercase; letter-spacing: 0.5px;">4. Strategic Vulnerabilities & Improvement Areas</strong>
+                    <ul style="margin: 6px 0 0 0; padding-left: 20px; color: #cccccc; font-size: 13px; line-height: 1.6;">
+                        {improvement_html}
                     </ul>
                 </div>
             </div>
