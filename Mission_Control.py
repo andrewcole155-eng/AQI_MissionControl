@@ -1988,7 +1988,7 @@ with tab3:
                     "TARGET": st.column_config.TextColumn("Institutional Benchmark / Target Range", width="large"),
                     "VERDICT_28D": st.column_config.TextColumn("28D Assessment", width="small"),
                 },
-                height=800  # <-- FIX: Increased height to 960 to fit all rows
+                height=800
             )
 
             # --- ENHANCED AI DIRECTOR TELEMETRY OVERVIEW & QUANT MEMO ---
@@ -2038,23 +2038,18 @@ with tab3:
             else:
                 psr_narrative = f"🛡️ <strong>Canary Gate (PSR {avg_psr:.1%}):</strong> Below the 35.0% promotion threshold. Challenger models quarantined in Shadow Fleet mode to protect production capital."
 
-            # <-- FIX: Use textwrap.dedent to strip the Python indentation before sending to Markdown
-            import textwrap
-            overview_html = textwrap.dedent(f"""
+            # <-- FIX: Added .replace('\n', '') to completely flatten the HTML string for Streamlit
+            overview_html = f"""
             <div style="background-color: #1e1e1e; padding: 18px; border-radius: 8px; border-left: 5px solid #569cd6; margin-top: 18px; border: 1px solid #333;">
                 <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #333; padding-bottom: 8px; margin-bottom: 12px;">
                     <h4 style="color: #ffffff; margin: 0; font-size: 16px;">🧠 AI Director's Institutional Telemetry Briefing</h4>
                     <span style="background: #252526; color: #569cd6; font-size: 11px; padding: 3px 8px; border-radius: 4px; border: 1px solid #3c3c3c; font-family: monospace;">ALLOCATOR MEMO</span>
                 </div>
-
-                <!-- Live Executive Regime Snapshot -->
                 <div style="background: #181818; padding: 12px; border-radius: 6px; margin-bottom: 14px; font-size: 13.5px; line-height: 1.5; color: #b5b5b5;">
                     <p style="margin: 0 0 6px 0;">{perf_narrative}</p>
                     <p style="margin: 0 0 6px 0;">{mmd_narrative}</p>
                     <p style="margin: 0;">{psr_narrative}</p>
                 </div>
-
-                <!-- Pillar 1: Alpha Quality & Neutrality -->
                 <div style="margin-bottom: 12px;">
                     <strong style="color: #569cd6; font-size: 13.5px; text-transform: uppercase; letter-spacing: 0.5px;">1. Alpha Quality & Market Neutrality</strong>
                     <ul style="margin: 6px 0 0 0; padding-left: 20px; color: #cccccc; font-size: 13px; line-height: 1.6;">
@@ -2063,8 +2058,6 @@ with tab3:
                         <li><strong>Canary PSR ({avg_psr:.1%}):</strong> Exceeds the institutional hurdle rate (35.0%), validating that excess compounding is statistically robust against non-normal skew and fat tails.</li>
                     </ul>
                 </div>
-
-                <!-- Pillar 2: Risk-Adjusted Edge & Tail Defense -->
                 <div style="margin-bottom: 12px;">
                     <strong style="color: #4ec9b0; font-size: 13.5px; text-transform: uppercase; letter-spacing: 0.5px;">2. Risk-Adjusted Edge & Tail Defense</strong>
                     <ul style="margin: 6px 0 0 0; padding-left: 20px; color: #cccccc; font-size: 13px; line-height: 1.6;">
@@ -2073,8 +2066,6 @@ with tab3:
                         <li><strong>Expected Shortfall (CVaR 95% at {cvar_all_val:.2f}%):</strong> Average tail-risk on worst-case sessions remains strictly bounded within quantitative risk limits.</li>
                     </ul>
                 </div>
-
-                <!-- Pillar 3: Execution Mechanics & Durability -->
                 <div>
                     <strong style="color: #dcdcaa; font-size: 13.5px; text-transform: uppercase; letter-spacing: 0.5px;">3. Execution Mechanics & Edge Durability</strong>
                     <ul style="margin: 6px 0 0 0; padding-left: 20px; color: #cccccc; font-size: 13px; line-height: 1.6;">
@@ -2083,7 +2074,8 @@ with tab3:
                     </ul>
                 </div>
             </div>
-            """)
+            """.replace('\n', '')
+            
             st.markdown(overview_html, unsafe_allow_html=True)
 
         st.divider()
