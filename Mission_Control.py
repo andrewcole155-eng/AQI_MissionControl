@@ -729,7 +729,16 @@ def calculate_advanced_metrics(hist_df, df_ex=None):
     
     df['peak'] = df['equity'].cummax()
     max_dd = ((df['equity'] - df['peak']) / df['peak']).min()
+    
+    # --- DECOUPLED DRAWDOWN METRICS ---
+    # MAR Ratio: Lifetime CAGR / Lifetime Max Drawdown
     mar = (cagr / abs(max_dd)) if max_dd < 0 else 0.0
+    
+    # Calmar Ratio: Strictly proxying 3-Year CAGR / 3-Year Max Drawdown
+    calmar = mar if years_active <= 3 else (cagr / abs(((df['equity'].tail(252*3) - df['peak'].tail(252*3)) / df['peak'].tail(252*3)).min())) if max_dd < 0 else 0.0
+    
+    # RoMD (Return over Max Drawdown): Absolute Return / Drawdown (Prevents annualization distortion on short horizons)
+    romd = (total_return / abs(max_dd)) if max_dd < 0 else 0.0
 
     # Sharpe Ratio (Daily Excess vs 4% Cash Hurdle)
     daily_rf = 0.04 / 252
@@ -783,8 +792,9 @@ def calculate_advanced_metrics(hist_df, df_ex=None):
         avg_loss = abs(losses.mean() / 100.0) if not losses.empty else 0.0
         expectancy = (trade_hit_rate * avg_win) - ((1 - trade_hit_rate) * avg_loss)
         sqn = (len(df_ex) ** 0.5) * (expectancy / (df_ex['PnL (%)'].std() / 100.0)) if df_ex['PnL (%)'].std() > 0 else 0.0
+        trades_taken = len(df_ex)
     else:
-        trade_hit_rate, expectancy, sqn = 0.0, 0.0, 0.0
+        trade_hit_rate, expectancy, sqn, trades_taken = 0.0, 0.0, 0.0, 0
 
     positive_days = (returns > 0).sum()
     active_days = (returns != 0).sum()
@@ -798,17 +808,19 @@ def calculate_advanced_metrics(hist_df, df_ex=None):
         "Max Drawdown": max_dd, 
         "Sharpe Ratio": sharpe, 
         "Sortino Ratio": sortino, 
-        "Calmar Ratio": mar, 
+        "Calmar Ratio": calmar, 
+        "MAR Ratio": mar,
+        "RoMD": romd,
         "Market Beta": beta_val, 
         "Information Ratio": information_ratio, 
-        "MAR Ratio": mar,
         "Profit Factor": profit_factor, 
         "Win Rate (Daily)": daily_win_rate,
         "Trade Hit Rate": trade_hit_rate, 
         "Expectancy": expectancy, 
         "SQN": sqn,
         "CVaR (95%)": cvar_95,
-        "Track Record (Months)": months_active
+        "Track Record (Months)": months_active,
+        "Trades Taken": trades_taken
     }
 
 def create_scorecard_df(metrics_all, hit_rate_all, trades_all, metrics_28d, hit_rate_28d, trades_28d, offline_state=None, model_health=None):
@@ -845,7 +857,7 @@ def create_scorecard_df(metrics_all, hit_rate_all, trades_all, metrics_28d, hit_
             return "🔥 Good" if val > 1.5 else ("✅ Target" if val >= 1.0 else "😐 Std")
         elif "Sortino" in metric_name:
             return "🚀 Exceptional" if val > 3.0 else ("💎 Strong" if val > 2.0 else "😐 Std")
-        elif "Calmar" in metric_name:
+        elif "Calmar" in metric_name or "RoMD" in metric_name:
             return "💎 Strong" if val > 2.0 else ("✅ Acceptable" if val > 1.0 else "🔻 Weak")
         elif "Market Beta" in metric_name:
             return "🎯 Pure Alpha" if -0.10 < val < 0.10 else "⚠️ Correlated"
@@ -861,7 +873,7 @@ def create_scorecard_df(metrics_all, hit_rate_all, trades_all, metrics_28d, hit_
             return "🏛️ Credible" if val >= 24 else "🌱 Maturing"
         return "—"
 
-    # --- Live Institutional CI/CD Metrics Extraction ---
+    # [CI/CD extraction remains identical here]
     psr_vals, mmd_vals = [], []
     for t_data in model_health.values():
         if "PSR" in t_data and t_data["PSR"] > 0: psr_vals.append(t_data["PSR"])
@@ -873,7 +885,7 @@ def create_scorecard_df(metrics_all, hit_rate_all, trades_all, metrics_28d, hit_
     psr_display = f"{avg_psr:.1%}" if psr_vals else "Pending CI/CD Gate"
     mmd_display = f"{avg_mmd:.4f}" if mmd_vals else "Calibrating RBF"
 
-    # Extract calculated metrics (Fallback to 0.0)
+    # Extract calculated metrics
     tot_all = metrics_all.get('Total Return', 0.0)
     cagr_all = metrics_all.get('CAGR', 0.0)
     srt_all = metrics_all.get('Sortino Ratio', 0.0)
@@ -892,7 +904,7 @@ def create_scorecard_df(metrics_all, hit_rate_all, trades_all, metrics_28d, hit_
     tot_28 = metrics_28d.get('Total Return', 0.0)
     cagr_28 = metrics_28d.get('CAGR', 0.0)
     srt_28 = metrics_28d.get('Sortino Ratio', 0.0)
-    calmar_28 = metrics_28d.get('Calmar Ratio', 0.0)
+    romd_28 = metrics_28d.get('RoMD', 0.0) # Pulled instead of Calmar
     mdd_28 = metrics_28d.get('Max Drawdown', 0.0)
     beta_28 = metrics_28d.get('Market Beta', 0.0)
     cvar_28 = metrics_28d.get('CVaR (95%)', 0.0)
@@ -929,7 +941,10 @@ def create_scorecard_df(metrics_all, hit_rate_all, trades_all, metrics_28d, hit_
         {"METRIC": "Expected Shortfall (CVaR 95%)", "TARGET": "Must remain strictly bounded within predefined risk tolerance.", "LIFETIME": f"{cvar_all:.2f}%", "VERDICT_ALL": eval_verdict("Expected Shortfall", cvar_all), "28D": f"{cvar_28:.2f}%", "VERDICT_28D": eval_verdict("Expected Shortfall", cvar_28)},
         {"METRIC": "Sharpe Ratio", "TARGET": "> 1.5 Return per unit of total risk", "LIFETIME": f"{shp_all:.2f}", "VERDICT_ALL": eval_verdict("Sharpe", shp_all), "28D": f"{shp_28:.2f}", "VERDICT_28D": eval_verdict("Sharpe", shp_28)},
         {"METRIC": "Sortino Ratio", "TARGET": "> 2.0 (Strong) to > 3.0 (Exceptional).", "LIFETIME": f"{srt_all:.2f}", "VERDICT_ALL": eval_verdict("Sortino", srt_all), "28D": f"{srt_28:.2f}", "VERDICT_28D": eval_verdict("Sortino", srt_28)},
-        {"METRIC": "Calmar Ratio (3-Year)", "TARGET": "> 1.0 (Acceptable) to > 2.0 (Strong).", "LIFETIME": f"{calmar_all:.2f}", "VERDICT_ALL": eval_verdict("Calmar", calmar_all), "28D": f"{calmar_28:.2f}", "VERDICT_28D": eval_verdict("Calmar", calmar_28)},
+        
+        # Swaps Calmar for localized RoMD on the 28D window display
+        {"METRIC": "Calmar Ratio (Lifetime) / RoMD (28D)", "TARGET": "> 1.0 (Acceptable) to > 2.0 (Strong).", "LIFETIME": f"{calmar_all:.2f}", "VERDICT_ALL": eval_verdict("Calmar", calmar_all), "28D": f"{romd_28:.2f}", "VERDICT_28D": eval_verdict("RoMD", romd_28)},
+        
         {"METRIC": "Information Ratio (vs SPY)", "TARGET": "> 0.5. Alpha generated vs benchmark.", "LIFETIME": f"{ir_all:.2f}", "VERDICT_ALL": eval_verdict("Information Ratio", ir_all), "28D": f"{ir_28:.2f}", "VERDICT_28D": eval_verdict("Information Ratio", ir_28)},
     ]
     
@@ -939,13 +954,20 @@ def create_scorecard_df(metrics_all, hit_rate_all, trades_all, metrics_28d, hit_
 
 def calculate_institutional_score(metrics):
     score = 0
-    score += min(30, (metrics.get('Sharpe Ratio', 0) / 2.0) * 30)
-    score += min(25, (metrics.get('MAR Ratio', 0) / 1.0) * 25)
+    trades = metrics.get('Trades Taken', 0)
+    
+    # Floor bound ensures negative ratios contribute 0 rather than deducting from the total
+    score += max(0, min(30, (metrics.get('Sharpe Ratio', 0) / 2.0) * 30))
+    score += max(0, min(25, (metrics.get('MAR Ratio', 0) / 1.0) * 25))
+    score += max(0, min(20, (metrics.get('Sortino Ratio', 0) / 3.0) * 20))
+    
+    # Capital preservation points only awarded if the system is actively risking capital
     dd = abs(metrics.get('Max Drawdown', 0))
-    if dd < 0.10: score += 25
-    elif dd < 0.20: score += 15
-    elif dd < 0.30: score += 5
-    score += min(20, (metrics.get('Sortino Ratio', 0) / 3.0) * 20)
+    if trades > 0:
+        if dd < 0.10: score += 25
+        elif dd < 0.20: score += 15
+        elif dd < 0.30: score += 5
+        
     return min(100, score)
 
 def calculate_future_projections(start_date, starting_equity, target_cagr, weekly_deposits=[0, 70, 140], inflation_rate=0.03):
