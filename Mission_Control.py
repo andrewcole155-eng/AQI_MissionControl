@@ -1987,7 +1987,7 @@ with tab3:
                     "TARGET": st.column_config.TextColumn("Institutional Benchmark / Target Range", width="large"),
                     "VERDICT_28D": st.column_config.TextColumn("28D Assessment", width="small"),
                 },
-                height=960  # <-- FIX: Increased height to 960 to fit all rows
+                height=700  # <-- FIX: Increased height to 960 to fit all rows
             )
 
             # --- ENHANCED AI DIRECTOR TELEMETRY OVERVIEW & QUANT MEMO ---
