@@ -980,14 +980,13 @@ def calculate_institutional_score(metrics):
         
     return min(100, score)
 
-def calculate_future_projections(start_date, starting_equity, target_cagr, weekly_deposits=[0, 70, 140], inflation_rate=0.03):
-    start_date = pd.to_datetime(start_date).tz_localize(None).normalize()
-    today = pd.Timestamp.now().normalize()
+def calculate_future_projections(current_equity, target_cagr, weekly_deposits=[0, 70, 140], inflation_rate=0.03):
+    # Anchor the projection strictly to today, using the live equity balance
+    start_date = pd.Timestamp.now().normalize()
     
     target_dates = [start_date]
     for i in range(1, 37): target_dates.append(start_date + pd.DateOffset(months=i))
     for i in range(4, 21): target_dates.append(start_date + pd.DateOffset(years=i))
-    target_dates.append(today)
     target_dates = sorted(list(set(target_dates)))
     
     weekly_rate = ((1 + target_cagr) ** (1 / 52.1429)) - 1
@@ -998,7 +997,7 @@ def calculate_future_projections(start_date, starting_equity, target_cagr, weekl
         weeks_from_start = (date - start_date).days / 7
         if years_from_start < 0: continue
         
-        base_fv = starting_equity * ((1 + target_cagr) ** years_from_start)
+        base_fv = current_equity * ((1 + target_cagr) ** years_from_start)
         base_inflated = base_fv * ((1 + inflation_rate) ** years_from_start)
         
         row = {"Date": date, "Base (No Deposits)": base_fv, "Base (+3% Inflation)": base_inflated}
@@ -1938,7 +1937,8 @@ with tab3:
              proj_label = "Lifetime (28D Unavailable)"
              
         inception_dt, starting_principal = hist_df_raw['timestamp'].min(), hist_df_raw['equity'].iloc[0]
-        proj_df = calculate_future_projections(inception_dt, starting_principal, projection_rate)
+        # Generate forward projections anchored to current equity
+        proj_df = calculate_future_projections(current_equity_raw, projection_rate)
 
         col_gauge, col_scorecard = st.columns([1, 2.5])
         
