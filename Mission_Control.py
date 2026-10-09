@@ -23,6 +23,7 @@ from scipy.stats import skew, kurtosis
 from scipy.ndimage import gaussian_filter
 from sklearn.decomposition import PCA
 import plotly.graph_objects as go
+import textwrap
 import warnings
 
 # --- SUPPRESS THIRD-PARTY WARNINGS ---
@@ -2037,51 +2038,52 @@ with tab3:
             else:
                 psr_narrative = f"🛡️ <strong>Canary Gate (PSR {avg_psr:.1%}):</strong> Below the 35.0% promotion threshold. Challenger models quarantined in Shadow Fleet mode to protect production capital."
 
-            # <-- FIX: HTML string moved flush to the left margin to prevent Markdown code-block rendering
-            overview_html = f"""
-<div style="background-color: #1e1e1e; padding: 18px; border-radius: 8px; border-left: 5px solid #569cd6; margin-top: 18px; border: 1px solid #333;">
-    <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #333; padding-bottom: 8px; margin-bottom: 12px;">
-        <h4 style="color: #ffffff; margin: 0; font-size: 16px;">🧠 AI Director's Institutional Telemetry Briefing</h4>
-        <span style="background: #252526; color: #569cd6; font-size: 11px; padding: 3px 8px; border-radius: 4px; border: 1px solid #3c3c3c; font-family: monospace;">ALLOCATOR MEMO</span>
-    </div>
+            # <-- FIX: Use textwrap.dedent to strip the Python indentation before sending to Markdown
+            import textwrap
+            overview_html = textwrap.dedent(f"""
+            <div style="background-color: #1e1e1e; padding: 18px; border-radius: 8px; border-left: 5px solid #569cd6; margin-top: 18px; border: 1px solid #333;">
+                <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #333; padding-bottom: 8px; margin-bottom: 12px;">
+                    <h4 style="color: #ffffff; margin: 0; font-size: 16px;">🧠 AI Director's Institutional Telemetry Briefing</h4>
+                    <span style="background: #252526; color: #569cd6; font-size: 11px; padding: 3px 8px; border-radius: 4px; border: 1px solid #3c3c3c; font-family: monospace;">ALLOCATOR MEMO</span>
+                </div>
 
-    <!-- Live Executive Regime Snapshot -->
-    <div style="background: #181818; padding: 12px; border-radius: 6px; margin-bottom: 14px; font-size: 13.5px; line-height: 1.5; color: #b5b5b5;">
-        <p style="margin: 0 0 6px 0;">{perf_narrative}</p>
-        <p style="margin: 0 0 6px 0;">{mmd_narrative}</p>
-        <p style="margin: 0;">{psr_narrative}</p>
-    </div>
+                <!-- Live Executive Regime Snapshot -->
+                <div style="background: #181818; padding: 12px; border-radius: 6px; margin-bottom: 14px; font-size: 13.5px; line-height: 1.5; color: #b5b5b5;">
+                    <p style="margin: 0 0 6px 0;">{perf_narrative}</p>
+                    <p style="margin: 0 0 6px 0;">{mmd_narrative}</p>
+                    <p style="margin: 0;">{psr_narrative}</p>
+                </div>
 
-    <!-- Pillar 1: Alpha Quality & Neutrality -->
-    <div style="margin-bottom: 12px;">
-        <strong style="color: #569cd6; font-size: 13.5px; text-transform: uppercase; letter-spacing: 0.5px;">1. Alpha Quality & Market Neutrality</strong>
-        <ul style="margin: 6px 0 0 0; padding-left: 20px; color: #cccccc; font-size: 13px; line-height: 1.6;">
-            <li><strong>Market Beta (&beta; = {beta_28d_val:+.2f} 28D | {beta_all_val:+.2f} Lifetime):</strong> True zero-correlation to the S&amp;P 500. Insulates capital from broader macro downturns and eliminates disguised equity risk.</li>
-            <li><strong>Information Ratio ({ir_all_val:.2f} Lifetime | {ir_28d_val:.2f} 28D):</strong> Recent execution outpaces benchmark noise with high tracking efficiency (short-term IR &gt; 1.50 confirms active edge expansion).</li>
-            <li><strong>Canary PSR ({avg_psr:.1%}):</strong> Exceeds the institutional hurdle rate (35.0%), validating that excess compounding is statistically robust against non-normal skew and fat tails.</li>
-        </ul>
-    </div>
+                <!-- Pillar 1: Alpha Quality & Neutrality -->
+                <div style="margin-bottom: 12px;">
+                    <strong style="color: #569cd6; font-size: 13.5px; text-transform: uppercase; letter-spacing: 0.5px;">1. Alpha Quality & Market Neutrality</strong>
+                    <ul style="margin: 6px 0 0 0; padding-left: 20px; color: #cccccc; font-size: 13px; line-height: 1.6;">
+                        <li><strong>Market Beta (&beta; = {beta_28d_val:+.2f} 28D | {beta_all_val:+.2f} Lifetime):</strong> True zero-correlation to the S&amp;P 500. Insulates capital from broader macro downturns and eliminates disguised equity risk.</li>
+                        <li><strong>Information Ratio ({ir_all_val:.2f} Lifetime | {ir_28d_val:.2f} 28D):</strong> Recent execution outpaces benchmark noise with high tracking efficiency (short-term IR &gt; 1.50 confirms active edge expansion).</li>
+                        <li><strong>Canary PSR ({avg_psr:.1%}):</strong> Exceeds the institutional hurdle rate (35.0%), validating that excess compounding is statistically robust against non-normal skew and fat tails.</li>
+                    </ul>
+                </div>
 
-    <!-- Pillar 2: Risk-Adjusted Edge & Tail Defense -->
-    <div style="margin-bottom: 12px;">
-        <strong style="color: #4ec9b0; font-size: 13.5px; text-transform: uppercase; letter-spacing: 0.5px;">2. Risk-Adjusted Edge & Tail Defense</strong>
-        <ul style="margin: 6px 0 0 0; padding-left: 20px; color: #cccccc; font-size: 13px; line-height: 1.6;">
-            <li><strong>Drawdown Profile ({mdd_all_val:.1%} Lifetime Max DD | {mdd_28d_val:.1%} 28D):</strong> Strict capital defense. Calmar of {calmar_all_val:.2f} (Lifetime) and RoMD of {romd_28d_val:.2f} (28D) place downside control in the upper tier of systematic strategies.</li>
-            <li><strong>Downside Asymmetry (Sortino {srt_28_val:.2f} vs Sharpe {shp_28_val:.2f} in 28D):</strong> Sortino outperforming Sharpe verifies that return volatility is skewed heavily to the upside, while downside excursions are clipped quickly.</li>
-            <li><strong>Expected Shortfall (CVaR 95% at {cvar_all_val:.2f}%):</strong> Average tail-risk on worst-case sessions remains strictly bounded within quantitative risk limits.</li>
-        </ul>
-    </div>
+                <!-- Pillar 2: Risk-Adjusted Edge & Tail Defense -->
+                <div style="margin-bottom: 12px;">
+                    <strong style="color: #4ec9b0; font-size: 13.5px; text-transform: uppercase; letter-spacing: 0.5px;">2. Risk-Adjusted Edge & Tail Defense</strong>
+                    <ul style="margin: 6px 0 0 0; padding-left: 20px; color: #cccccc; font-size: 13px; line-height: 1.6;">
+                        <li><strong>Drawdown Profile ({mdd_all_val:.1%} Lifetime Max DD | {mdd_28d_val:.1%} 28D):</strong> Strict capital defense. Calmar of {calmar_all_val:.2f} (Lifetime) and RoMD of {romd_28d_val:.2f} (28D) place downside control in the upper tier of systematic strategies.</li>
+                        <li><strong>Downside Asymmetry (Sortino {srt_28_val:.2f} vs Sharpe {shp_28_val:.2f} in 28D):</strong> Sortino outperforming Sharpe verifies that return volatility is skewed heavily to the upside, while downside excursions are clipped quickly.</li>
+                        <li><strong>Expected Shortfall (CVaR 95% at {cvar_all_val:.2f}%):</strong> Average tail-risk on worst-case sessions remains strictly bounded within quantitative risk limits.</li>
+                    </ul>
+                </div>
 
-    <!-- Pillar 3: Execution Mechanics & Durability -->
-    <div>
-        <strong style="color: #dcdcaa; font-size: 13.5px; text-transform: uppercase; letter-spacing: 0.5px;">3. Execution Mechanics & Edge Durability</strong>
-        <ul style="margin: 6px 0 0 0; padding-left: 20px; color: #cccccc; font-size: 13px; line-height: 1.6;">
-            <li><strong>Hit Rate ({hit_rate_28d:.0%} 28D | {hit_rate_all:.0%} Lifetime) &amp; Expectancy ({exp_all_val:+.2%} to {exp_28d_val:+.2%}):</strong> Classic positive-skew momentum profile. Pair with a <strong>{pf_28d_val:.2f} Profit Factor</strong>, ensuring average winners decisively absorb stopped positions.</li>
-            <li><strong>Turnover ({turnover_all:.1f} trades/yr | {trades_28d} in 28D):</strong> Friction-optimized trade frequency across the 12-ticker universe, preserving liquidity without commission decay.</li>
-        </ul>
-    </div>
-</div>
-"""
+                <!-- Pillar 3: Execution Mechanics & Durability -->
+                <div>
+                    <strong style="color: #dcdcaa; font-size: 13.5px; text-transform: uppercase; letter-spacing: 0.5px;">3. Execution Mechanics & Edge Durability</strong>
+                    <ul style="margin: 6px 0 0 0; padding-left: 20px; color: #cccccc; font-size: 13px; line-height: 1.6;">
+                        <li><strong>Hit Rate ({hit_rate_28d:.0%} 28D | {hit_rate_all:.0%} Lifetime) &amp; Expectancy ({exp_all_val:+.2%} to {exp_28d_val:+.2%}):</strong> Classic positive-skew momentum profile. Pair with a <strong>{pf_28d_val:.2f} Profit Factor</strong>, ensuring average winners decisively absorb stopped positions.</li>
+                        <li><strong>Turnover ({turnover_all:.1f} trades/yr | {trades_28d} in 28D):</strong> Friction-optimized trade frequency across the 12-ticker universe, preserving liquidity without commission decay.</li>
+                    </ul>
+                </div>
+            </div>
+            """)
             st.markdown(overview_html, unsafe_allow_html=True)
 
         st.divider()
