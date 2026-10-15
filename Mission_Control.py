@@ -835,18 +835,21 @@ def calculate_advanced_metrics(hist_df, df_ex=None):
     }
 
 def create_scorecard_df(metrics_all, hit_rate_all, trades_all, metrics_28d, hit_rate_28d, trades_28d, offline_state=None, model_health=None):
-    """
-    Constructs a dual-horizon performance scorecard comparing Lifetime vs. Trailing 28-Day performance against institutional targets.
-    """
     if offline_state is None: offline_state = {}
     if model_health is None: model_health = {}
+
+    # ---> NEW: Calculate the dynamic fleet-wide MMD threshold <---
+    # This averages the calibrated 95th-percentile thresholds across all active models
+    fleet_thresholds = [m.get('MMD Threshold', 0.05) for m in model_health.values() if 'MMD Threshold' in m]
+    dynamic_fleet_limit = sum(fleet_thresholds) / len(fleet_thresholds) if fleet_thresholds else 0.05
 
     def eval_verdict(metric_name, val):
         if val is None: return "TBD"
         if "Deflated Sharpe" in metric_name or "Probabilistic Sharpe" in metric_name:
             return "🏆 Elite" if val >= 0.75 else ("✅ Target" if val >= 0.35 else "⚠️ Weak")
-        elif "Backtest Overfitting" in metric_name or "Multivariate Drift" in metric_name:
-            return "🛡️ Safe" if val <= 0.05 else ("⚠️ Monitor" if val <= 0.10 else "🚨 Drift")
+        elif "Multivariate Drift" in metric_name:
+            # Uses the dynamic threshold instead of static 0.05
+            return "🛡️ Safe" if val <= dynamic_fleet_limit else ("⚠️ Monitor" if val <= dynamic_fleet_limit * 1.5 else "🚨 Drift")
         elif "Total Cumulative Return" in metric_name:
             return "🏆 Elite" if val >= 0.50 else ("📈 Profitable" if val > 0 else "🔻 Loss")
         elif "CAGR" in metric_name:
@@ -936,7 +939,7 @@ def create_scorecard_df(metrics_all, hit_rate_all, trades_all, metrics_28d, hit_
     data = [
         # === INSTITUTIONAL ALLOCATOR METRICS ===
         {"METRIC": "Canary PSR (Probabilistic Sharpe)", "TARGET": "> 35.0% (Walk-Forward Canary Gate Hurdle)", "LIFETIME": psr_display, "VERDICT_ALL": eval_verdict("Probabilistic Sharpe", avg_psr), "28D": "N/A", "VERDICT_28D": "N/A"},
-        {"METRIC": "Multivariate Drift (MMD)", "TARGET": "< 0.05. Monitored via RBF Kernel.", "LIFETIME": mmd_display, "VERDICT_ALL": "🛡️ Safe" if avg_mmd < 0.05 else "🚨 Drift", "28D": "N/A", "VERDICT_28D": "N/A"},
+        {"METRIC": "Multivariate Drift (MMD)", "TARGET": f"< {dynamic_fleet_limit:.4f} (Dynamically Calibrated).", "LIFETIME": mmd_display, "VERDICT_ALL": eval_verdict("Multivariate Drift", avg_mmd), "28D": "N/A", "VERDICT_28D": "N/A"},
         {"METRIC": "Market Beta (β) to S&P 500", "TARGET": "-0.10 < β < 0.10. Pure, uncorrelated alpha.", "LIFETIME": f"{beta_all:.2f}", "VERDICT_ALL": eval_verdict("Market Beta", beta_all), "28D": f"{beta_28:.2f}", "VERDICT_28D": eval_verdict("Market Beta", beta_28)},
         {"METRIC": "Minimum Track Record Length", "TARGET": "> 24 to 36 months of live trading required.", "LIFETIME": f"{trl_all:.1f} months", "VERDICT_ALL": eval_verdict("Track Record", trl_all), "28D": "N/A", "VERDICT_28D": "N/A"},
         {"METRIC": "Capacity (Maximum AUM)", "TARGET": "> $100M for institutional allocators.", "LIFETIME": "Est. >$250M", "VERDICT_ALL": "✅ High Liq.", "28D": "N/A", "VERDICT_28D": "N/A"},
@@ -1895,7 +1898,7 @@ with tab3:
         else:
             hit_rate_all, trades_all = 0.0, 0
 
-        # --- TRAILING 28-DAY METRICS ---
+        # --- TRAILING 28-DAY EQUITY METRICS & 100-TRADE SQN ---
         cutoff_28d = now_utc - pd.Timedelta(days=28)
         hist_28d = hist_df_adj[hist_df_adj['timestamp'] >= cutoff_28d].copy()
         
@@ -1909,18 +1912,22 @@ with tab3:
                 hist_28d['benchmark_return'] = hist_28d['spy_return'].fillna(0.0)
                 hist_28d.drop(columns=['date_only', 'spy_return'], inplace=True, errors='ignore')
 
-        df_ex_28d = df_ex[pd.to_datetime(df_ex['Exit_Time'], utc=True) >= cutoff_28d] if not df_ex.empty and 'Exit_Time' in df_ex.columns else None
-        metrics_28d = calculate_advanced_metrics(hist_28d, df_ex_28d) if not hist_28d.empty else {}
-
+        # ---> FIXED: 100-Trade Rolling Window for Statistical Stability <---
+        # We decouple trade metrics (SQN, Win Rate) from calendar days to ensure N is large enough for significance.
         if not df_ex.empty and 'Exit_Time' in df_ex.columns:
-            df_ex_28d = df_ex[pd.to_datetime(df_ex['Exit_Time'], utc=True) >= cutoff_28d]
-            hit_rate_28d = len(df_ex_28d[df_ex_28d['Result'] == 'Win']) / len(df_ex_28d) if len(df_ex_28d) > 0 else 0.0
-            trades_28d = len(df_ex_28d)
+            # Take the most recent 100 closed trades, regardless of how many days it took
+            df_ex_recent = df_ex.sort_values(by='Exit_Time').tail(100).copy()
+            hit_rate_recent = len(df_ex_recent[df_ex_recent['Result'] == 'Win']) / len(df_ex_recent) if len(df_ex_recent) > 0 else 0.0
+            trades_recent = len(df_ex_recent)
         else:
-            hit_rate_28d, trades_28d = 0.0, 0
+            df_ex_recent = None
+            hit_rate_recent, trades_recent = 0.0, 0
+
+        # Calculate advanced metrics using the 28d equity curve, but the 100-trade execution history
+        metrics_28d = calculate_advanced_metrics(hist_28d, df_ex_recent) if not hist_28d.empty else {}
 
         # Build Scorecard DataFrame
-        scorecard_df = create_scorecard_df(metrics, hit_rate_all, trades_all, metrics_28d, hit_rate_28d, trades_28d, offline_state, model_health)
+        scorecard_df = create_scorecard_df(metrics, hit_rate_all, trades_all, metrics_28d, hit_rate_recent, trades_recent, offline_state, model_health)
 
         # Base the gauge strictly on 28-Day metrics (fallback to lifetime if 28-day lacks data)
         active_metrics = metrics_28d if metrics_28d and metrics_28d.get('Total Return') else metrics
