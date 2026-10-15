@@ -98,7 +98,8 @@ def init_alpaca():
 # --- NEW: TIMESCALEDB FAST TELEMETRY ADAPTER ---
 @st.cache_data(ttl=30)
 def fetch_timescaledb_telemetry():
-    """Fetches execution reality directly from TimescaleDB, bypassing slow Alpaca order loops."""
+    """Fetches execution reality directly from TimescaleDB, bypassing slow Alpaca order loops.
+       PARTITIONED: Only fetches LIVE_TRADING epochs for edge evaluation."""
     # Only attempt connection if TimescaleDB credentials are explicitly provided in secrets
     if 'timescaledb' not in st.secrets or not st.secrets["timescaledb"].get("HOST"):
         return pd.DataFrame()
@@ -116,11 +117,13 @@ def fetch_timescaledb_telemetry():
             connect_timeout=3
         )
         
+        # ---> FIX: Extract the 'environment' flag from JSONB and partition <---
         query = """
         SELECT time as "Exit_Time", symbol as "Ticker", side as "Type", 
                intended_price as "Intended", actual_price as "Exit_Price", 
                pnl_pct * 100 as "PnL (%)", slippage_pct * 100 as "Slippage (%)", exit_reason 
         FROM execution_telemetry 
+        WHERE state_tensor::text CONTAINS 'PRODUCTION'
         ORDER BY time ASC
         """
         df_ex = pd.read_sql(query, conn)
@@ -722,7 +725,22 @@ def calculate_advanced_metrics(hist_df, df_ex=None):
     start_date, current_date = df['timestamp'].min(), df['timestamp'].max()
     days_active = max((current_date - start_date).days, 1)
     years_active = days_active / 365.25
-    months_active = days_active / 30.44
+    
+    # ---> FIXED: Partitioned Record Maturity (LIVE VS SIMULATED) <---
+    # Instead of trusting the Alpaca account age (which blends paper/backtest),
+    # we calculate maturity strictly from the TimescaleDB production trades.
+    if df_ex is not None and not df_ex.empty and 'Exit_Time' in df_ex.columns:
+        live_start = pd.to_datetime(df_ex['Exit_Time'].min())
+        live_end = pd.to_datetime(df_ex['Exit_Time'].max())
+        live_days_active = max((live_end - live_start).days, 1)
+        months_active = live_days_active / 30.44
+        
+        # We also need to estimate the shadow/simulated period for the memo
+        shadow_days_active = max((current_date - start_date).days - live_days_active, 0)
+        shadow_months_active = shadow_days_active / 30.44
+    else:
+        months_active = 0.0
+        shadow_months_active = days_active / 30.44
     
     start_equity, end_equity = float(df['equity'].iloc[0]), float(df['equity'].iloc[-1])
     total_return = (end_equity / start_equity) - 1 if start_equity > 0 else 0.0
@@ -789,21 +807,42 @@ def calculate_advanced_metrics(hist_df, df_ex=None):
 
     # --- Trade Execution & Slippage Metrics ---
     avg_slippage_bps = 0.0
+    sqn = 0.0
+    expectancy = 0.0
+    trade_hit_rate = 0.0
+    trades_taken = 0
+    
     if df_ex is not None and not df_ex.empty and 'PnL (%)' in df_ex.columns:
+        trades_taken = len(df_ex)
+        
+        # Global metrics based on the whole slice
         wins = df_ex[df_ex['PnL (%)'] > 0]['PnL (%)']
         losses = df_ex[df_ex['PnL (%)'] <= 0]['PnL (%)']
-        trade_hit_rate = len(wins) / len(df_ex)
+        trade_hit_rate = len(wins) / trades_taken if trades_taken > 0 else 0.0
         avg_win = wins.mean() / 100.0 if not wins.empty else 0.0
         avg_loss = abs(losses.mean() / 100.0) if not losses.empty else 0.0
         expectancy = (trade_hit_rate * avg_win) - ((1 - trade_hit_rate) * avg_loss)
-        sqn = (len(df_ex) ** 0.5) * (expectancy / (df_ex['PnL (%)'].std() / 100.0)) if df_ex['PnL (%)'].std() > 0 else 0.0
-        trades_taken = len(df_ex)
         
         # Calculate Average Slippage in Basis Points (bps)
         if 'Slippage (%)' in df_ex.columns:
             avg_slippage_bps = df_ex['Slippage (%)'].mean() * 100
-    else:
-        trade_hit_rate, expectancy, sqn, trades_taken = 0.0, 0.0, 0.0, 0
+            
+        # ---> FIXED: 100-Trade SQN Standardization <---
+        # Decouple SQN from the equity calendar slice to maintain statistical validity
+        df_recent = df_ex.sort_values(by='Exit_Time').tail(100) if 'Exit_Time' in df_ex.columns else df_ex.tail(100)
+        recent_count = len(df_recent)
+        
+        recent_wins = df_recent[df_recent['PnL (%)'] > 0]['PnL (%)']
+        recent_losses = df_recent[df_recent['PnL (%)'] <= 0]['PnL (%)']
+        
+        recent_hit_rate = len(recent_wins) / recent_count if recent_count > 0 else 0.0
+        recent_avg_win = recent_wins.mean() / 100.0 if not recent_wins.empty else 0.0
+        recent_avg_loss = abs(recent_losses.mean() / 100.0) if not recent_losses.empty else 0.0
+        
+        recent_expectancy = (recent_hit_rate * recent_avg_win) - ((1 - recent_hit_rate) * recent_avg_loss)
+        std_dev = (df_recent['PnL (%)'].std() / 100.0)
+        
+        sqn = (recent_count ** 0.5) * (recent_expectancy / std_dev) if std_dev > 0 else 0.0
 
     positive_days = (returns > 0).sum()
     active_days = (returns != 0).sum()
@@ -830,6 +869,7 @@ def calculate_advanced_metrics(hist_df, df_ex=None):
         "SQN": sqn,
         "CVaR (95%)": cvar_95,
         "Track Record (Months)": months_active,
+        "Shadow Record (Months)": shadow_months_active,
         "Trades Taken": trades_taken,
         "Average Slippage (bps)": avg_slippage_bps # <-- NEW
     }
@@ -2025,6 +2065,7 @@ with tab3:
             sqn_28 = metrics_28d.get('SQN', 0.0)
 
             trl_all = metrics.get('Track Record (Months)', 0.0)
+            shadow_all = metrics.get('Shadow Record (Months)', 0.0)  # <--- ADD THIS
             dur_all = metrics.get('Max Drawdown Duration', 0)
             years_active_var = trl_all / 12.0 if trl_all > 0 else 1.0
             turnover_all = trades_all / years_active_var
@@ -2060,7 +2101,7 @@ with tab3:
                 improvement_bullets.append(f"<li><strong>Short-Term Edge Consistency (28D SQN {sqn_28:.2f}):</strong> While lifetime system quality is robust, the recent 28-day window shows a drop in trade-by-trade edge consistency relative to variance (Target &gt; 1.6).</li>")
                 
             if trl_all < 24:
-                improvement_bullets.append(f"<li><strong>Track Record Immaturity ({trl_all:.1f} Months):</strong> Tier-1 allocators require a minimum of 24-36 months of live telemetry to validate survival across shifting macroeconomic interest rate cycles.</li>")
+                improvement_bullets.append(f"<li><strong>Track Record Immaturity (Verified Live: {trl_all:.1f} Months | Shadow/Sim: {shadow_all:.1f} Months):</strong> Tier-1 allocators require a minimum of 24-36 months of strictly LIVE telemetry. Simulated data has now been formally partitioned out of the verified track record.</li>")
             
             if not improvement_bullets:
                 improvement_bullets.append("<li><strong>System performing optimally across all primary constraints.</strong> Continue standard monitoring.</li>")
