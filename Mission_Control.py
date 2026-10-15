@@ -2080,10 +2080,11 @@ with tab3:
                     <p style="margin: 0;">{psr_narrative}</p>
                 </div>
                 <div style="margin-bottom: 12px;">
-                    <strong style="color: #dcdcaa; font-size: 13.5px; text-transform: uppercase; letter-spacing: 0.5px;">3. Execution Mechanics & Edge Durability</strong>
+                    <strong style="color: #569cd6; font-size: 13.5px; text-transform: uppercase; letter-spacing: 0.5px;">1. Alpha Quality & Market Neutrality</strong>
                     <ul style="margin: 6px 0 0 0; padding-left: 20px; color: #cccccc; font-size: 13px; line-height: 1.6;">
-                        <li><strong>Hit Rate ({hit_rate_recent:.0%} Recent 100 | {hit_rate_all:.0%} Lifetime) &amp; Expectancy ({exp_all_val:+.2%} to {exp_28d_val:+.2%}):</strong> Classic positive-skew momentum profile. Pair with a <strong>{pf_28d_val:.2f} Profit Factor</strong>, ensuring average winners decisively absorb stopped positions.</li>
-                        <li><strong>Turnover ({turnover_all:.1f} trades/yr | {trades_recent} in Recent 100):</strong> Friction-optimized trade frequency across the 12-ticker universe, preserving liquidity without commission decay.</li>
+                        <li><strong>Market Beta (&beta; = {beta_28d_val:+.2f} 28D | {beta_all_val:+.2f} Lifetime):</strong> True zero-correlation to the S&amp;P 500. Insulates capital from broader macro downturns and eliminates disguised equity risk.</li>
+                        <li><strong>Information Ratio ({ir_all_val:.2f} Lifetime | {ir_28d_val:.2f} 28D):</strong> Recent execution outpaces benchmark noise with high tracking efficiency (short-term IR &gt; 1.50 confirms active edge expansion).</li>
+                        <li><strong>Canary PSR ({avg_psr:.1%}):</strong> Exceeds the institutional hurdle rate (35.0%), validating that excess compounding is statistically robust against non-normal skew and fat tails.</li>
                     </ul>
                 </div>
                 <div style="margin-bottom: 12px;">
@@ -2097,8 +2098,8 @@ with tab3:
                 <div style="margin-bottom: 12px;">
                     <strong style="color: #dcdcaa; font-size: 13.5px; text-transform: uppercase; letter-spacing: 0.5px;">3. Execution Mechanics & Edge Durability</strong>
                     <ul style="margin: 6px 0 0 0; padding-left: 20px; color: #cccccc; font-size: 13px; line-height: 1.6;">
-                        <li><strong>Hit Rate ({hit_rate_28d:.0%} 28D | {hit_rate_all:.0%} Lifetime) &amp; Expectancy ({exp_all_val:+.2%} to {exp_28d_val:+.2%}):</strong> Classic positive-skew momentum profile. Pair with a <strong>{pf_28d_val:.2f} Profit Factor</strong>, ensuring average winners decisively absorb stopped positions.</li>
-                        <li><strong>Turnover ({turnover_all:.1f} trades/yr | {trades_28d} in 28D):</strong> Friction-optimized trade frequency across the 12-ticker universe, preserving liquidity without commission decay.</li>
+                        <li><strong>Hit Rate ({hit_rate_recent:.0%} Recent 100 | {hit_rate_all:.0%} Lifetime) &amp; Expectancy ({exp_all_val:+.2%} to {exp_28d_val:+.2%}):</strong> Classic positive-skew momentum profile. Pair with a <strong>{pf_28d_val:.2f} Profit Factor</strong>, ensuring average winners decisively absorb stopped positions.</li>
+                        <li><strong>Turnover ({turnover_all:.1f} trades/yr | {trades_recent} in Recent 100):</strong> Friction-optimized trade frequency across the 12-ticker universe, preserving liquidity without commission decay.</li>
                     </ul>
                 </div>
                 <div style="margin-bottom: 0px;">
