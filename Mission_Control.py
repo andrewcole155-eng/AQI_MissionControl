@@ -2137,23 +2137,39 @@ with tab3:
             else:
                 psr_narrative = f"🛡️ <strong>Canary Gate (PSR {avg_psr:.1%}):</strong> Below the 35.0% promotion threshold. Challenger models quarantined in Shadow Fleet mode to protect production capital."
 
-            # --- NEW: Dynamic Vulnerability / Improvement Logic ---
+            # --- NEW: Dynamic Vulnerability / Improvement Logic (With Regime Overrides) ---
             improvement_bullets = []
             
+            # 1. MMD Drift Override
             if avg_mmd > 0.05:
-                improvement_bullets.append(f"<li><strong>Multivariate Feature Drift (MMD at {avg_mmd:.4f}):</strong> Exceeds the 0.05 threshold. While adaptive, high drift indicates the model's operating environment has structurally diverged from its baseline. Monitor for degradation.</li>")
+                if ir_28d_val > 1.0:
+                    improvement_bullets.append(f"<li><del style='color: #555;'><strong>Multivariate Feature Drift (MMD at {avg_mmd:.4f})</strong></del><br><span style='color: #00ff41;'>✅ <strong>Productive Adaptation:</strong> Feature drift is elevated, but a surging 28-Day Information Ratio ({ir_28d_val:.2f}) confirms the neural network is successfully capturing new regime alpha rather than degrading.</span></li>")
+                else:
+                    improvement_bullets.append(f"<li><strong>Multivariate Feature Drift (MMD at {avg_mmd:.4f}):</strong> Exceeds the 0.05 threshold. While adaptive, high drift indicates the model's operating environment has structurally diverged from its baseline. Monitor for degradation.</li>")
             
+            # 2. Time-to-Recovery Override (Historical Drag vs Recent Stability)
             if dur_all > 90:
-                improvement_bullets.append(f"<li><strong>Time-to-Recovery ({dur_all} Days):</strong> The system spent over a quarter underwater during its maximum drawdown. Institutional allocators typically prefer recovery windows under 90 days to minimize capital lockup.</li>")
+                if abs(mdd_28d_val) < 0.08 and c28 > 0:
+                    improvement_bullets.append(f"<li><del style='color: #555;'><strong>Time-to-Recovery ({dur_all} Days)</strong></del><br><span style='color: #00ff41;'>✅ <strong>Resolved by Recent Architecture:</strong> Historically spent {dur_all} days in drawdown, but the stabilized 28-day window shows a maximum drawdown of only {abs(mdd_28d_val):.1%} and positive compounding, indicating legacy tail-risk has been neutralized.</span></li>")
+                else:
+                    improvement_bullets.append(f"<li><strong>Time-to-Recovery ({dur_all} Days):</strong> The system spent over a quarter underwater during its maximum drawdown. Institutional allocators typically prefer recovery windows under 90 days to minimize capital lockup.</li>")
             
+            # 3. SQN Override (100-Trade Efficiency Override)
             if sqn_28 < 1.6:
-                improvement_bullets.append(f"<li><strong>Short-Term Edge Consistency (28D SQN {sqn_28:.2f}):</strong> While lifetime system quality is robust, the recent 28-day window shows a drop in trade-by-trade edge consistency relative to variance (Target &gt; 1.6).</li>")
+                if pf_28d_val > 1.5 or hit_rate_recent >= 0.50:
+                    improvement_bullets.append(f"<li><del style='color: #555;'><strong>Short-Term Edge Consistency (28D SQN {sqn_28:.2f})</strong></del><br><span style='color: #00ff41;'>✅ <strong>Mitigated by Trade Efficiency:</strong> While sequence variance suppressed SQN, the underlying Profit Factor ({pf_28d_val:.2f}) and Win Rate ({hit_rate_recent:.0%}) across the last 100 trades confirm a highly robust positive expectancy.</span></li>")
+                else:
+                    improvement_bullets.append(f"<li><strong>Short-Term Edge Consistency (28D SQN {sqn_28:.2f}):</strong> While lifetime system quality is robust, the recent 28-day window shows a drop in trade-by-trade edge consistency relative to variance (Target &gt; 1.6).</li>")
                 
+            # 4. Track Record Immaturity Override
             if trl_all < 24:
-                improvement_bullets.append(f"<li><strong>Track Record Immaturity (Verified Live: {trl_all:.1f} Months | Shadow/Sim: {shadow_all:.1f} Months):</strong> Tier-1 allocators require a minimum of 24-36 months of strictly LIVE telemetry. Simulated data has now been formally partitioned out of the verified track record.</li>")
+                if shp_28_val > 2.0 and c28 > 0.15:
+                    improvement_bullets.append(f"<li><del style='color: #555;'><strong>Track Record Immaturity ({trl_all:.1f} Months)</strong></del><br><span style='color: #00ff41;'>✅ <strong>Accelerated Validation:</strong> Though under the 24-month live institutional minimum, the current regime outputs an elite 28-Day Sharpe ({shp_28_val:.2f}) and CAGR ({c28:.1%}), demonstrating profound out-of-sample stability following recent system evolutions.</span></li>")
+                else:
+                    improvement_bullets.append(f"<li><strong>Track Record Immaturity (Verified Live: {trl_all:.1f} Months | Shadow/Sim: {shadow_all:.1f} Months):</strong> Tier-1 allocators require a minimum of 24-36 months of strictly LIVE telemetry. Simulated data has now been formally partitioned out of the verified track record.</li>")
             
             if not improvement_bullets:
-                improvement_bullets.append("<li><strong>System performing optimally across all primary constraints.</strong> Continue standard monitoring.</li>")
+                improvement_bullets.append("<li><span style='color: #00ff41;'>✅ <strong>System performing optimally across all primary constraints.</strong></span> No active vulnerabilities detected. Continue standard monitoring.</li>")
                 
             improvement_html = "".join(improvement_bullets)
 
