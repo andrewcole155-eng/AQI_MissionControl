@@ -2858,9 +2858,16 @@ with tab6:
             else:
                 canary_badge = f"<span style='color: #00ff41; font-weight: bold;'>🚀 LIVE PRODUCTION | PSR: {psr_val:.1%}</span>"
 
-            mmd_badge = f"<span style='color: #ff4b4b;'>⚠️ Severe ({mmd_val:.4f})</span>" if mmd_val > 0.10 else (
-                f"<span style='color: #ffb000;'>⚡ Elevated ({mmd_val:.4f})</span>" if mmd_val > 0.05 else f"<span style='color: #00ff41;'>✅ Stable ({mmd_val:.4f})</span>"
-            )
+            # Fallback to static 0.05 / 0.10 only if the backend threshold wasn't saved
+            dynamic_threshold = float(profile.get('MMD Threshold', 0.05))
+            elevated_threshold = dynamic_threshold * 1.5
+
+            if mmd_val > elevated_threshold:
+                mmd_badge = f"<span style='color: #ff4b4b;'>⚠️ Severe ({mmd_val:.4f})</span>"
+            elif mmd_val > dynamic_threshold:
+                mmd_badge = f"<span style='color: #ffb000;'>⚡ Elevated ({mmd_val:.4f})</span>"
+            else:
+                mmd_badge = f"<span style='color: #00ff41;'>✅ Stable ({mmd_val:.4f})</span>"
 
             # Narrative Synthesis
             ir_diff = live_ir - base_ir
