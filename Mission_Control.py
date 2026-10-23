@@ -143,6 +143,55 @@ def fetch_timescaledb_telemetry():
         return pd.DataFrame()
 
 @st.cache_data(ttl=60)
+def fetch_timescaledb_canary_history():
+    """
+    Fetches the historical CI/CD pipeline gate telemetry (MMD and PSR) 
+    from the canonical_signals table in TimescaleDB.
+    """
+    if 'timescaledb' not in st.secrets or not st.secrets["timescaledb"].get("HOST"):
+        return pd.DataFrame()
+
+    try:
+        import psycopg2
+        db_host = st.secrets["timescaledb"]["HOST"]
+        
+        conn = psycopg2.connect(
+            host=db_host,
+            port=st.secrets["timescaledb"].get("PORT", "5432"),
+            user=st.secrets["timescaledb"].get("USER", "aqi_admin"),
+            password=st.secrets["timescaledb"].get("PASSWORD", "aqi_secure_db_pass_2026"),
+            dbname=st.secrets["timescaledb"].get("DB_NAME", "aqi_telemetry"),
+            connect_timeout=3
+        )
+        
+        # Extract MMD (drift_status) and PSR (psr_score) directly from the JSONB metadata payload
+        query = """
+        SELECT 
+            time as "Timestamp",
+            symbol as "Ticker",
+            COALESCE(NULLIF(metadata->>'psr_score', 'null'), '0')::numeric as "PSR",
+            COALESCE(NULLIF(metadata->>'drift_status', 'null'), '0')::numeric as "MMD"
+        FROM canonical_signals 
+        WHERE environment = 'PRODUCTION'
+        ORDER BY time ASC
+        """
+        df_canary = pd.read_sql(query, conn)
+        conn.close()
+        
+        if not df_canary.empty:
+            df_canary['Timestamp'] = pd.to_datetime(df_canary['Timestamp'], utc=True)
+            # Resample to get the Daily Fleet Average
+            df_daily = df_canary.set_index('Timestamp').resample('D').mean(numeric_only=True).dropna().reset_index()
+            return df_daily
+            
+        return pd.DataFrame()
+    except ImportError:
+        return pd.DataFrame()
+    except Exception as e:
+        st.warning(f"TimescaleDB Canary Fetch Error: {e}")
+        return pd.DataFrame()
+
+@st.cache_data(ttl=60)
 def read_bot_logs():
     """Reads logs from Google Sheets (The Bridge)."""
     try:
@@ -2289,7 +2338,57 @@ with tab3:
 
             with c_roll10:
                 st.caption("Rolling CI/CD Pipeline Gates (MMD & PSR)")
-                st.info("Historical time-series tracking for Multivariate Drift (MMD) and Probabilistic Sharpe (PSR) requires persistent TimescaleDB telemetry appending. Backend integration pending.")
+                
+                df_canary = fetch_timescaledb_canary_history()
+                
+                if not df_canary.empty and len(df_canary) > 1:
+                    from plotly.subplots import make_subplots
+                    
+                    # Create a dual-y-axis figure
+                    fig_canary = make_subplots(specs=[[{"secondary_y": True}]])
+                    
+                    # Add PSR (Left Axis - Green)
+                    fig_canary.add_trace(
+                        go.Scatter(
+                            x=df_canary['Timestamp'], y=df_canary['PSR'] * 100, 
+                            mode='lines', name='Fleet Avg PSR (%)', 
+                            line=dict(color='#00ff41', width=2),
+                            fill='tozeroy', fillcolor='rgba(0, 255, 65, 0.1)'
+                        ),
+                        secondary_y=False
+                    )
+                    
+                    # Add MMD (Right Axis - Purple)
+                    fig_canary.add_trace(
+                        go.Scatter(
+                            x=df_canary['Timestamp'], y=df_canary['MMD'], 
+                            mode='lines', name='Fleet Avg MMD', 
+                            line=dict(color='#c586c0', width=2)
+                        ),
+                        secondary_y=True
+                    )
+                    
+                    # Target Thresholds
+                    fig_canary.add_hline(y=35.0, line_dash="dot", line_color="#00ff41", annotation_text="Gate (35%)", secondary_y=False)
+                    fig_canary.add_hline(y=0.05, line_dash="dot", line_color="#c586c0", annotation_text="Drift Limit", secondary_y=True)
+                    
+                    fig_canary.update_layout(
+                        margin=dict(l=0, r=0, t=10, b=0), height=220, 
+                        xaxis_title=None, 
+                        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', 
+                        font=dict(color="#cccccc"),
+                        showlegend=False
+                    )
+                    
+                    # Clean up axes styling
+                    fig_canary.update_yaxes(title_text=None, showgrid=True, gridcolor='#333', secondary_y=False)
+                    fig_canary.update_yaxes(title_text=None, showgrid=False, secondary_y=True)
+                    
+                    st.plotly_chart(fig_canary, width='stretch')
+                else:
+                    st.caption("Awaiting sufficient longitudinal data in TimescaleDB to render the Canary phase plot...")
+                    if not df_canary.empty:
+                        st.info(f"Database connected successfully. Seeded with {len(df_canary)} day(s) of history.")
         else: st.caption("Not enough data yet for 30-Day Rolling metrics.")
 
         st.divider()
