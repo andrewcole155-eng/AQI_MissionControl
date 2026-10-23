@@ -464,6 +464,15 @@ def parse_latest_run_logic(logs, bot_state=None, df_ex=None):
             
             live_metrics[t] = {'Live WR': wr, 'Live IR': ir, 'Trades': trades}
 
+    # ---> NEW: Extract dynamic thresholds directly from the raw text logs <---
+    log_thresholds = {}
+    for line in reversed(logs):
+        match = re.search(r'\[([A-Z]+)\] Live MMD: .*? \| Threshold: ([0-9.]+)', line)
+        if match:
+            ticker = match.group(1)
+            if ticker not in log_thresholds:
+                log_thresholds[ticker] = float(match.group(2))
+
     signals = {}
     watchlist = [] 
     neural_conviction = {} 
@@ -562,10 +571,11 @@ def parse_latest_run_logic(logs, bot_state=None, df_ex=None):
                 model_cfg = data.get("canonical_signal", {}).get("model_config", {})
                 tearsheet_cfg = data.get("tearsheet_metrics", {})
 
-                # ---> FIXED: Extract the dynamic MMD threshold <---
-                dynamic_mmd_limit = data.get("drift_threshold", 
+                # ---> FIXED: Try to pull from logs first, then fallback to payload or 0.05 <---
+                dynamic_mmd_limit = log_thresholds.get(ticker, 
+                                    data.get("drift_threshold", 
                                     model_cfg.get("drift_threshold", 
-                                    tearsheet_cfg.get("mmd_threshold", 0.05)))
+                                    tearsheet_cfg.get("mmd_threshold", 0.05))))
 
                 # Extract PSR score with hierarchical fallback
                 psr_score = data.get("psr_score", 
