@@ -464,15 +464,6 @@ def parse_latest_run_logic(logs, bot_state=None, df_ex=None):
             
             live_metrics[t] = {'Live WR': wr, 'Live IR': ir, 'Trades': trades}
 
-    # ---> NEW: Extract dynamic thresholds directly from the raw text logs <---
-    log_thresholds = {}
-    for line in reversed(logs):
-        match = re.search(r'\[([A-Z]+)\] Live MMD: .*? \| Threshold: ([0-9.]+)', line)
-        if match:
-            ticker = match.group(1)
-            if ticker not in log_thresholds:
-                log_thresholds[ticker] = float(match.group(2))
-
     signals = {}
     watchlist = [] 
     neural_conviction = {} 
@@ -483,6 +474,18 @@ def parse_latest_run_logic(logs, bot_state=None, df_ex=None):
 
     json_signals = bot_state.get("tickers", bot_state.get("signals", {}))
     action_map = {0: "HOLD", 1: "LONG", 2: "SHORT", 3: "CLOSE"}
+
+    # ---> NEW: Deep Recursive Search to find the threshold no matter what the key is named <---
+    def _find_threshold(d):
+        if not isinstance(d, dict): return None
+        for k, v in d.items():
+            k_lower = k.lower()
+            if isinstance(v, (int, float)) and any(x in k_lower for x in ['threshold', 'limit', 'mmd_max', 'drift_max']):
+                return float(v)
+            if isinstance(v, dict):
+                res = _find_threshold(v)
+                if res is not None: return res
+        return None
 
     for ticker, data in json_signals.items():
         if isinstance(data, dict):
@@ -571,11 +574,10 @@ def parse_latest_run_logic(logs, bot_state=None, df_ex=None):
                 model_cfg = data.get("canonical_signal", {}).get("model_config", {})
                 tearsheet_cfg = data.get("tearsheet_metrics", {})
 
-                # ---> FIXED: Try to pull from logs first, then fallback to payload or 0.05 <---
-                dynamic_mmd_limit = log_thresholds.get(ticker, 
-                                    data.get("drift_threshold", 
-                                    model_cfg.get("drift_threshold", 
-                                    tearsheet_cfg.get("mmd_threshold", 0.05))))
+                # ---> FIXED: Use deep recursive search to find the threshold <---
+                dynamic_mmd_limit = _find_threshold(data)
+                if dynamic_mmd_limit is None:
+                    dynamic_mmd_limit = 0.05
 
                 # Extract PSR score with hierarchical fallback
                 psr_score = data.get("psr_score", 
@@ -606,7 +608,7 @@ def parse_latest_run_logic(logs, bot_state=None, df_ex=None):
                     "Base MDD": base_mdd,
                     "Trades": live_trades,
                     "MMD": mmd_drift,
-                    "MMD Threshold": dynamic_mmd_limit,  # <--- CRITICAL FIX: Save it here
+                    "MMD Threshold": float(dynamic_mmd_limit),  # <--- Cleanly extracted
                     "PSR": psr_score,
                     "Deployment": deployment
                 }
