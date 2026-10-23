@@ -165,6 +165,7 @@ def fetch_timescaledb_canary_history():
         )
         
         # Extract MMD (drift_status) and PSR (psr_score) directly from the JSONB metadata payload
+        # Removed the strict 'environment' filter to capture all canonical inference runs
         query = """
         SELECT 
             time as "Timestamp",
@@ -172,7 +173,6 @@ def fetch_timescaledb_canary_history():
             COALESCE(NULLIF(metadata->>'psr_score', 'null'), '0')::numeric as "PSR",
             COALESCE(NULLIF(metadata->>'drift_status', 'null'), '0')::numeric as "MMD"
         FROM canonical_signals 
-        WHERE environment = 'PRODUCTION'
         ORDER BY time ASC
         """
         df_canary = pd.read_sql(query, conn)
