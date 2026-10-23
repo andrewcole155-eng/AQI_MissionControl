@@ -562,6 +562,11 @@ def parse_latest_run_logic(logs, bot_state=None, df_ex=None):
                 model_cfg = data.get("canonical_signal", {}).get("model_config", {})
                 tearsheet_cfg = data.get("tearsheet_metrics", {})
 
+                # ---> FIXED: Extract the dynamic MMD threshold <---
+                dynamic_mmd_limit = data.get("drift_threshold", 
+                                    model_cfg.get("drift_threshold", 
+                                    tearsheet_cfg.get("mmd_threshold", 0.05)))
+
                 # Extract PSR score with hierarchical fallback
                 psr_score = data.get("psr_score", 
                             model_cfg.get("psr_score", 
@@ -591,6 +596,7 @@ def parse_latest_run_logic(logs, bot_state=None, df_ex=None):
                     "Base MDD": base_mdd,
                     "Trades": live_trades,
                     "MMD": mmd_drift,
+                    "MMD Threshold": dynamic_mmd_limit,  # <--- CRITICAL FIX: Save it here
                     "PSR": psr_score,
                     "Deployment": deployment
                 }
