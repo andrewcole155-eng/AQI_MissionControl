@@ -2085,9 +2085,13 @@ with tab3:
         cagr_all_time = metrics.get("CAGR", 0.0)
         cagr_28d = metrics_28d.get('CAGR', 0.0)
         
+        # --- NEW: Institutional Reality Cap ---
+        # Cap short-term regime projections at 30% to prevent hyper-exponential illusions
+        capped_28d_cagr = min(cagr_28d, 0.30) 
+        
         if cagr_source == "28-Day Regime (Recent)":
-            projection_rate = cagr_28d
-            proj_label = "28D Regime"
+            projection_rate = capped_28d_cagr
+            proj_label = f"28D Regime (Capped at 30%)" if cagr_28d > 0.30 else "28D Regime"
         elif cagr_source == "Manual Override":
             projection_rate = manual_cagr
             proj_label = "Manual"
