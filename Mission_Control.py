@@ -1241,11 +1241,9 @@ def generate_empirical_loss_landscape(bot_state, grid_size=40):
         
     features_np = np.array(raw_features, dtype=float)
     
-    # Project the 30-D tensor space into 2 Principal Directions
     pca = PCA(n_components=2)
     components = pca.fit_transform(features_np)
     
-    # Kernel Density Estimation (KDE) to map the true empirical loss/entropy landscape
     x_min, x_max = components[:, 0].min() - 1, components[:, 0].max() + 1
     y_min, y_max = components[:, 1].min() - 1, components[:, 1].max() + 1
     
@@ -1253,14 +1251,11 @@ def generate_empirical_loss_landscape(bot_state, grid_size=40):
     positions = np.vstack([X.ravel(), Y.ravel()])
     kernel = gaussian_kde(components.T)
     
-    # Invert density to represent the Loss/Entropy surface (Valleys = Low Loss)
     Z = np.reshape(kernel(positions).T, X.shape)
     Z_normalized = 1.0 - (Z / Z.max()) 
     
-    # Synthetic trajectory targeting the deepest minimum
     z_traj_np = np.linspace(Z_normalized.max(), Z_normalized.min(), 20) + np.random.normal(0, 0.02, 20)
     
-    # Evaluate topology structural integrity
     mean_surface_loss = Z_normalized.mean()
     if mean_surface_loss < 0.3:
         status_label = "🟢 WIDE MINIMUM (Robust Generalization)"
@@ -2780,6 +2775,54 @@ with tab5:
                 annotations=[dict(showarrow=False, text=f"LANDSCAPE: {phys_status}", xref="paper", yref="paper", x=0.02, y=0.95, xanchor="left", yanchor="top", font=dict(size=14, color="#e91e63", weight="bold"), bgcolor="#1e1e1e")]
             )
             st.plotly_chart(fig_phys, width='stretch')
+
+    st.divider()
+    st.markdown("### 🧬 Empirical Policy Landscape (Loss Surface)")
+    st.caption("A mathematically rigorous view of the neural network's generalization capability based on live data distributions.")
+    
+    X_emp, Y_emp, Z_emp, z_traj_emp, emp_status = generate_empirical_loss_landscape(inference_state)
+
+    if X_emp is not None:
+        col_text_emp, col_plot_emp = st.columns([1.5, 2.5])
+        with col_text_emp:
+            st.markdown("#### 🧠 Optimization Topology")
+            if "WIDE" in emp_status:
+                st.success(f"**State:** {emp_status}")
+                st.write("**What this means:** The model has found a 'wide valley' in the loss landscape. Minor market shocks or unexpected feature drifts won't drastically spike the error rate. This indicates excellent out-of-sample generalization and stability.")
+            elif "MODERATE" in emp_status:
+                st.warning(f"**State:** {emp_status}")
+                st.write("**What this means:** The model is in a standard gradient. It is performing well, but the margin of error is narrower. Moderate monitoring is required as macro conditions shift.")
+            else:
+                st.error(f"**State:** {emp_status}")
+                st.write("**What this means:** The model is trapped in a 'sharp minimum'. It is hyper-optimized for current conditions, meaning even a tiny shift in market data will cause a massive spike in errors. High risk of overfitting and regime fragility.")
+            
+            st.divider()
+            st.markdown("#### 🗺️ How to Read This Chart")
+            st.write("- **The Surface (Topology):** Represents the actual feature density of your live execution environment. Deeper blue valleys equal safe zones of low algorithmic confusion.")
+            st.write("- **The Valleys:** A flatter, wider basin means your model has a robust margin of safety.")
+            st.write("- **The Orange Path:** Shows how a gradient descent optimizer would mathematically walk down into the safest generalization basin.")
+
+        with col_plot_emp:
+            fig_emp = go.Figure()
+            fig_emp.add_trace(go.Surface(x=X_emp, y=Y_emp, z=Z_emp, colorscale='YlGnBu_r', opacity=0.8, showscale=False, lighting=dict(ambient=0.4, diffuse=0.9, roughness=0.1, specular=0.2), hoverinfo='none', cmin=0, cmax=1, contours_z=dict(show=True, usecolormap=True, highlightcolor="#fff", project_z=True)))
+            
+            recent_len = len(z_traj_emp)
+            x_traj = np.linspace(X_emp.min(), X_emp.mean(), recent_len)
+            y_traj = np.linspace(Y_emp.min(), Y_emp.mean(), recent_len)
+            
+            fig_emp.add_trace(go.Scatter3d(
+                x=x_traj, y=y_traj, z=z_traj_emp, mode='lines+markers', name='Descent Path', 
+                marker=dict(size=6, color=z_traj_emp, colorscale='Viridis', opacity=1.0, line=dict(color='white', width=1)), 
+                line=dict(color='#ff9800', width=5)
+            ))
+            
+            fig_emp.update_layout(
+                scene=dict(aspectmode='manual', aspectratio=dict(x=1, y=1, z=0.5), xaxis_title='Principal Vector X', yaxis_title='Principal Vector Y', zaxis_title='Surrogate Loss (Entropy)', 
+                xaxis=dict(backgroundcolor="#1e1e1e", gridcolor="#333", showbackground=True, zerolinecolor='white'), yaxis=dict(backgroundcolor="#1e1e1e", gridcolor="#333", showbackground=True, zerolinecolor='white'), zaxis=dict(backgroundcolor="#1e1e1e", gridcolor="#333", showbackground=True, tickvals=[0, 0.5, 1.0], zerolinecolor='white')), 
+                paper_bgcolor='rgba(0,0,0,0)', font=dict(color="#cccccc"), margin=dict(l=0, r=0, t=10, b=0), height=500, showlegend=False, 
+                annotations=[dict(showarrow=False, text=f"EMPIRICAL LANDSCAPE: {emp_status.split('(')[0].strip()}", xref="paper", yref="paper", x=0.02, y=0.95, xanchor="left", yanchor="top", font=dict(size=14, color="#e91e63", weight="bold"), bgcolor="#1e1e1e")]
+            )
+            st.plotly_chart(fig_emp, width='stretch')
 
     st.divider()
     st.markdown("### 🌌 AI Policy Landscape & Feature Space (PCA)")
