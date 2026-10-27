@@ -2907,18 +2907,36 @@ with tab6:
 
         # --- 2. DUAL FLEET VISUAL MAPPING (LIVE VS SHADOW) ---
         st.markdown("### 📊 Fleet Edge & Manifold Alignment (Live vs. Shadow)")
+        
+        # ---> NEW: Educational UI Expander <---
+        with st.expander("📖 How to Interpret Fleet Alignment & Edge Decay"):
+            st.markdown("""
+            * **Base IR (Blueprint):** The theoretical Information Ratio generated during weekend training across 3 years of historical data.
+            * **Live IR (Realized):** The actual Information Ratio generated in live, out-of-sample execution.
+            * **The Parity Line (Dashed):** If a model sits exactly on this line, reality perfectly matches the training simulation. 
+                * 🟢 **Above the line:** Model is overperforming its expected edge.
+                * 🔴 **Below the line:** Model is experiencing Edge Decay (underperforming expectations).
+            * **Bubble Size (MMD Drift):** Larger bubbles indicate the asset's current market behavior has drifted significantly away from what the AI was trained on.
+            """)
 
         fleet_rows = []
         for t, prof in filtered_health.items():
             deploy = prof.get('Deployment', 'PRODUCTION_DEPLOYED')
             is_sh = (deploy == "SHADOW_DEPLOYED" or "SHADOW" in str(prof.get('Lifecycle', '')).upper())
+            
+            # Extract raw values
+            raw_base_ir = float(prof.get('Base IR', 0.0))
+            raw_live_ir = float(prof.get('Live IR', 0.0))
+            
             fleet_rows.append({
                 "Ticker": t,
                 "Fleet": "🛡️ Shadow Fleet" if is_sh else "🚀 Live Production",
-                "Base IR": float(prof.get('Base IR', 0.0)),
-                "Live IR": float(prof.get('Live IR', 0.0)),
+                "Base IR": raw_base_ir,
+                "Live IR": raw_live_ir,
+                # ---> FIXED: Visual Clippers to prevent low-sample outliers (like ZETA's 69.14) from crushing the chart scale
+                "Chart Base IR": max(-5.0, min(5.0, raw_base_ir)),
+                "Chart Live IR": max(-5.0, min(5.0, raw_live_ir)),
                 "Edge Decay": float(prof.get('Decay', 1.0)),
-                # ---> FIXED: Non-linear visual scaling for MMD Drift
                 "MMD Drift": max(2.0, float(prof.get('MMD', 0.0)) * 100), 
                 "Trades": int(prof.get('Trades', 0)),
                 "Win Rate (%)": float(prof.get('Live WR', 0.0))
@@ -2927,28 +2945,26 @@ with tab6:
         df_fleet = pd.DataFrame(fleet_rows)
 
         if not df_fleet.empty:
-            # Sort by Live IR descending for a clean waterfall effect in the bar chart
             df_fleet = df_fleet.sort_values(by="Live IR", ascending=False)
-
             c_map1, c_map2 = st.columns([3, 2])
 
             with c_map1:
+                # ---> FIXED: Point X and Y to the Clipped Chart Data <---
                 fig_scatter = px.scatter(
                     df_fleet,
-                    x="Base IR",
-                    y="Live IR",
+                    x="Chart Base IR",
+                    y="Chart Live IR",
                     color="Fleet",
                     size="MMD Drift",
                     size_max=25,
                     hover_name="Ticker",
                     text="Ticker",
                     color_discrete_map={"🚀 Live Production": "#00ff41", "🛡️ Shadow Fleet": "#ffb000"},
-                    hover_data=["Trades", "Win Rate (%)", "Edge Decay", "MMD Drift"]
+                    hover_data={"Trades": True, "Win Rate (%)": True, "Live IR": True, "Base IR": True, "Chart Base IR": False, "Chart Live IR": False}
                 )
                 
-                # 45-degree parity line: Live IR == Base IR
-                max_axis = max(3.0, df_fleet['Base IR'].max() + 0.5, df_fleet['Live IR'].max() + 0.5)
-                min_axis = min(-1.0, df_fleet['Live IR'].min() - 0.5)
+                max_axis = max(3.0, df_fleet['Chart Base IR'].max() + 0.5, df_fleet['Chart Live IR'].max() + 0.5)
+                min_axis = min(-1.0, df_fleet['Chart Live IR'].min() - 0.5)
                 fig_scatter.add_shape(
                     type="line", x0=min_axis, y0=min_axis, x1=max_axis, y1=max_axis,
                     line=dict(color="rgba(255, 255, 255, 0.3)", width=2, dash="dash")
@@ -2956,14 +2972,13 @@ with tab6:
                 fig_scatter.add_hline(y=0.0, line_dash="dot", line_color="red", annotation_text="Zero Alpha", annotation_font_size=10)
                 fig_scatter.add_vline(x=0.0, line_dash="dot", line_color="rgba(255,255,255,0.2)")
                 
-                # Add borders and opacity to distinguish clustered 0.00 markers
                 fig_scatter.update_traces(
                     textposition="top center", 
                     textfont=dict(color="white", size=10),
                     marker=dict(line=dict(width=1, color='DarkSlateGrey'), opacity=0.85)
                 )
                 fig_scatter.update_layout(
-                    title=dict(text="Realized Edge vs. Weekend Blueprint<br><sup>Above dashed line = Outperforming. Bubble size = MMD Drift.</sup>"),
+                    title=dict(text="Realized Edge vs. Weekend Blueprint<br><sup>Above dashed line = Outperforming. Bubble size = MMD Drift. (Y-Axis capped at ±5.0)</sup>"),
                     height=400,
                     margin=dict(l=0, r=0, t=80, b=0),
                     paper_bgcolor='rgba(0,0,0,0)',
@@ -2978,15 +2993,17 @@ with tab6:
             with c_map2:
                 fig_bar = go.Figure()
                 fig_bar.add_trace(go.Bar(
-                    x=df_fleet['Ticker'], y=df_fleet['Base IR'],
-                    name='Base IR (Blueprint)', marker_color='#569cd6'
+                    x=df_fleet['Ticker'], y=df_fleet['Chart Base IR'],
+                    name='Base IR (Blueprint)', marker_color='#569cd6',
+                    hovertext=[f"True Base: {val:.2f}" for val in df_fleet['Base IR']]
                 ))
                 fig_bar.add_trace(go.Bar(
-                    x=df_fleet['Ticker'], y=df_fleet['Live IR'],
-                    name='Live IR (Realized)', marker_color='#00ff41'
+                    x=df_fleet['Ticker'], y=df_fleet['Chart Live IR'],
+                    name='Live IR (Realized)', marker_color='#00ff41',
+                    hovertext=[f"True Live: {val:.2f} (Trades: {t})" for val, t in zip(df_fleet['Live IR'], df_fleet['Trades'])]
                 ))
                 fig_bar.update_layout(
-                    title=dict(text="Edge Divergence by Asset<br><sup>Ranked by Live Realized Alpha</sup>"),
+                    title=dict(text="Edge Divergence by Asset<br><sup>Ranked by Live Realized Alpha (Capped at ±5.0)</sup>"),
                     barmode='group',
                     height=400,
                     margin=dict(l=0, r=0, t=80, b=0),
@@ -3053,20 +3070,31 @@ with tab6:
             else:
                 mmd_badge = f"<span style='color: #00ff41;'>✅ Stable ({mmd_val:.4f})</span>"
 
-            # Narrative Synthesis
+            # --- ENHANCED NARRATIVE & SYSTEM DIRECTIVES ---
             ir_diff = live_ir - base_ir
+            
             if 'QUARANTINED' in status:
-                narrative = "The model is <strong>quarantined</strong>. Signal generation is locked to cash until a challenger achieves a positive Base IR."
+                narrative = "<strong>Condition:</strong> The AI failed to find a mathematical edge during weekend training (Base IR &lt; 0)."
+                directive = "<span style='color: #ffb000;'><strong>System Directive:</strong> 🛑 <em>Trading Locked.</em> Capital is protected in cash until the next weekend retraining cycle generates a profitable blueprint.</span>"
             elif 'ABORTED' in status:
-                narrative = f"The model experienced an <strong>aborted warmup</strong> due to out-of-sample stress (Live IR: {live_ir:.2f})."
+                narrative = f"<strong>Condition:</strong> The model failed catastrophically in live execution, dropping to an unrecoverable Information Ratio ({live_ir:.2f})."
+                directive = "<span style='color: #ff4b4b;'><strong>System Directive:</strong> ✂️ <em>Kill Switch Activated.</em> All entries halted. The model is quarantined waiting for a complete architectural replacement.</span>"
             elif 'Empirical' in status:
-                narrative = f"The model is operating with an empirical override: live execution (IR: {live_ir:.2f}) is actively superseding validation fold limits."
+                narrative = f"<strong>Condition:</strong> Despite a weak training blueprint, the model has proven highly profitable in live execution (Live IR: {live_ir:.2f})."
+                directive = "<span style='color: #00ff41;'><strong>System Directive:</strong> 🚀 <em>Empirical Override.</em> Ignoring training phase limits; allocating capital based strictly on live out-of-sample edge.</span>"
             elif live_trades < 5:
-                narrative = f"The model is in <strong>active warmup ({live_trades}/5 trades)</strong>. Dynamic decay controls will arm once sample significance is met."
+                narrative = f"<strong>Condition:</strong> The model is currently collecting initial live data (Trade {live_trades} of 5 required)."
+                directive = "<span style='color: #569cd6;'><strong>System Directive:</strong> 🔍 <em>Observation Phase.</em> Running at baseline allocation. Edge penalty controls remain disarmed until statistical significance is reached.</span>"
             elif live_ir >= base_ir:
-                narrative = f"The model is exhibiting strong edge persistence, producing a Live IR of <strong>{live_ir:.2f}</strong> (+{ir_diff:.2f} vs. blueprint)."
+                narrative = f"<strong>Condition:</strong> The model is outperforming its training expectations, generating a Live IR of {live_ir:.2f} (a {ir_diff:+.2f} outperformance)."
+                directive = "<span style='color: #00ff41;'><strong>System Directive:</strong> 🟢 <em>Full Allocation Authorized.</em> The structural edge is intact. Compounding sequence is actively engaged.</span>"
             else:
-                narrative = f"The model is exhibiting edge decay, reporting a Live IR of <strong>{live_ir:.2f}</strong> ({ir_diff:.2f} vs. blueprint)."
+                if decay < 0.4:
+                    narrative = f"<strong>Condition:</strong> Severe alpha decay detected. The Live IR has collapsed to {live_ir:.2f} against a target of {base_ir:.2f}."
+                    directive = "<span style='color: #ff4b4b;'><strong>System Directive:</strong> ⚠️ <em>Capital Constrained.</em> Sizing penalty applied. Risk limits heavily tightened while monitoring for regime recovery or replacement.</span>"
+                else:
+                    narrative = f"<strong>Condition:</strong> Minor edge degradation detected (Live IR: {live_ir:.2f} vs Target: {base_ir:.2f})."
+                    directive = "<span style='color: #ffb000;'><strong>System Directive:</strong> 🟡 <em>Monitoring Active.</em> Standard sizing maintained, but penalty decay algorithm is tracking variance closely.</span>"
 
             card_html = (
                 f"<div style='margin-bottom: 16px; padding: 18px; border-left: 6px solid {status_color}; background-color: #1e1e1e; border-radius: 8px;'>"
@@ -3082,7 +3110,10 @@ with tab6:
                 f"<div><strong style='color: #569cd6;'>🏗️ Weekend Training Blueprint</strong><br>Base IR: <strong>{base_ir:.2f}</strong> &nbsp;|&nbsp; Win Rate: {base_wr:.1f}% &nbsp;|&nbsp; MDD Duration: {base_mdd}d</div>"
                 f"<div><strong style='color: #4ec9b0;'>⚡ Live Out-of-Sample Execution ({live_trades} Trades)</strong><br>Live IR: <strong>{live_ir:.2f}</strong> &nbsp;|&nbsp; Win Rate: {live_wr:.1f}% &nbsp;|&nbsp; Edge Decay: <strong>{decay:.2f}</strong></div>"
                 f"</div>"
-                f"<div style='margin-top: 12px; font-size: 0.92em; line-height: 1.5; color: #ccc;'>{narrative}</div>"
+                f"<div style='margin-top: 12px; font-size: 0.92em; line-height: 1.5; color: #ccc;'>"
+                f"<div style='margin-bottom: 6px;'>{narrative}</div>"
+                f"<div>{directive}</div>"
+                f"</div>"
                 f"</div>"
             )
             html_output += card_html
