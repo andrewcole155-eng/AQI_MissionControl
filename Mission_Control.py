@@ -976,7 +976,7 @@ def create_scorecard_df(metrics_all, hit_rate_all, trades_all, metrics_90d, hit_
         elif "Calmar" in metric_name or "RoMD" in metric_name:
             return "💎 Strong" if val > 2.0 else ("✅ Acceptable" if val > 1.0 else "🔻 Weak")
         elif "Market Beta" in metric_name:
-            return "🎯 Pure Alpha" if -0.10 < val < 0.10 else "⚠️ Correlated"
+            return "🎯 Pure Alpha" if abs(val) < 0.30 else ("🟡 Moderate" if abs(val) < 0.70 else "⚠️ Correlated")
         elif "Expected Shortfall" in metric_name:
             return "✅ Bounded" if abs(val) < 5.0 else "⚠️ High Tail Risk"
         elif "Profit Factor" in metric_name:
@@ -2524,11 +2524,12 @@ with tab3:
             spy_df['date_only'] = spy_df.index
             macro_df = pd.merge(merge_df, spy_df, on='date_only', how='left').fillna(0)
             
-            rolling_cov = macro_df['daily_return'].rolling(30).cov(macro_df['spy_return'])
-            rolling_spy_var = macro_df['spy_return'].rolling(30).var()
+            # ---> FIXED: Changed from 30 to 20 to perfectly match the 28 Calendar Day matrix
+            rolling_cov = macro_df['daily_return'].rolling(20).cov(macro_df['spy_return'])
+            rolling_spy_var = macro_df['spy_return'].rolling(20).var()
             
             macro_df['rolling_beta'] = (rolling_cov / rolling_spy_var).replace([np.inf, -np.inf], 0).fillna(0)
-            macro_df['rolling_corr'] = macro_df['daily_return'].rolling(30).corr(macro_df['spy_return']).fillna(0)
+            macro_df['rolling_corr'] = macro_df['daily_return'].rolling(20).corr(macro_df['spy_return']).fillna(0)
             
             c_mac1, c_mac2 = st.columns(2)
             with c_mac1:
@@ -2536,19 +2537,19 @@ with tab3:
                 fig_beta.update_traces(line_color='#c586c0')
                 fig_beta.add_hline(y=1.0, line_dash="dot", line_color="#ff4b4b", annotation_text="Market Benchmark (1.0)")
                 fig_beta.add_hline(y=0.0, line_dash="dash", line_color="white", annotation_text="Market Neutral (0.0)")
-                fig_beta.update_layout(title="30-Day Rolling Beta", margin=dict(l=0, r=0, t=30, b=0), height=250, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', xaxis_title=None, yaxis_title="Beta")
+                fig_beta.update_layout(title="28-Day Rolling Beta", margin=dict(l=0, r=0, t=30, b=0), height=250, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', xaxis_title=None, yaxis_title="Beta")
                 st.plotly_chart(fig_beta, width='stretch')
                 
             with c_mac2:
                 fig_corr = px.area(macro_df, x='timestamp', y='rolling_corr')
                 fig_corr.update_traces(line_color='#569cd6', fillcolor='rgba(86, 156, 214, 0.2)')
                 fig_corr.add_hline(y=0.0, line_dash="dash", line_color="white")
-                fig_corr.update_layout(title="30-Day Rolling Correlation (R)", margin=dict(l=0, r=0, t=30, b=0), height=250, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', xaxis_title=None, yaxis_title="Correlation")
+                fig_corr.update_layout(title="28-Day Rolling Correlation (R)", margin=dict(l=0, r=0, t=30, b=0), height=250, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', xaxis_title=None, yaxis_title="Correlation")
                 st.plotly_chart(fig_corr, width='stretch')
                 
             latest_beta = macro_df['rolling_beta'].iloc[-1]
-            if abs(latest_beta) < 0.3: st.success(f"**Current Posture:** Highly Decoupled (Beta: {latest_beta:.2f}). The system is generating pure uncorrelated Alpha.")
-            elif latest_beta >= 0.8: st.warning(f"**Current Posture:** Highly Correlated (Beta: {latest_beta:.2f}). The system is acting essentially as a leveraged SPY ETF.")
+            if abs(latest_beta) < 0.30: st.success(f"**Current Posture:** Highly Decoupled (Beta: {latest_beta:.2f}). The system is generating pure uncorrelated Alpha.")
+            elif latest_beta >= 0.70: st.warning(f"**Current Posture:** Highly Correlated (Beta: {latest_beta:.2f}). The system is acting essentially as a leveraged SPY ETF.")
             else: st.info(f"**Current Posture:** Moderately Correlated (Beta: {latest_beta:.2f}).")
         else: st.caption("Waiting for SPY historical data to populate macro charts...")
 
