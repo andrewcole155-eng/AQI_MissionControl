@@ -1182,12 +1182,47 @@ def calculate_3d_physics(df):
     phys_df['dfe'] = np.sqrt(phys_df['vel_smooth']**2 + phys_df['acc_smooth']**2 + phys_df['jerk_smooth']**2)
     return phys_df.dropna()
 
+@st.cache_data(ttl=600) 
+def generate_proxied_ppo_landscape(phys_df, log_state, conviction_data, grid_size=50):
+    if phys_df.empty: return None, None, None, None, "NO DATA"
+    recent_data = phys_df.tail(20).copy()
+    x_dim, y_dim = recent_data['vel_smooth'], recent_data['jerk_smooth']
+    v_mean, v_std = x_dim.mean() if not x_dim.empty else 0.0, x_dim.std() if len(x_dim) > 1 else 0.1
+    j_mean, j_std = y_dim.mean() if not y_dim.empty else 0.0, y_dim.std() if len(y_dim) > 1 else 0.1
+    if v_std == 0 or np.isnan(v_std): v_std = 0.1
+    if j_std == 0 or np.isnan(j_std): j_std = 0.1
+    
+    X, Y = np.meshgrid(np.linspace(v_mean - 3*v_std, v_mean + 3*v_std, grid_size), np.linspace(j_mean - 3*j_std, j_mean + 3*j_std, grid_size))
+    Z_base = np.sin(np.sqrt(X**2 + Y**2)) / (np.sqrt(X**2 + Y**2) + 1)
+    latest_jerk, latest_vel = abs(y_dim.iloc[-1]) if len(y_dim) > 0 else 0, abs(x_dim.iloc[-1]) if len(x_dim) > 0 else 0
+    is_stalled = latest_vel < 0.05 and len(conviction_data) == 0
+    
+    if is_stalled:
+        Z = np.full((grid_size, grid_size), 0.5) + np.random.normal(0, 0.005, (grid_size, grid_size))
+        status_label = "🔴 MODE COLLAPSE"
+    elif latest_jerk > 0.5:
+        Z_static = gaussian_filter(np.random.normal(0, 0.4, (grid_size, grid_size)), sigma=0.8)
+        Z = np.clip((((Z_base * np.exp(-0.2 * X**2)) + Z_static) + 1) / 2, 0.0, 1.0) 
+        status_label = "⚡ HIGH CHAOS"
+    else:
+        Z = np.clip((((np.cos(X) * np.sin(Y)) + np.random.normal(0, 0.02, (grid_size, grid_size))) + 1) / 2, 0.1, 0.9)
+        status_label = "🟢 HEALTHY EDGE"
+
+    avg_real_confidence = sum(d["Confidence"] for d in conviction_data.values()) / len(conviction_data) / 100.0 if conviction_data else 0.5
+    x_np, y_np = x_dim.to_numpy(), y_dim.to_numpy()
+
+    if is_stalled: z_traj_np = np.full(len(x_np), 0.52) 
+    elif latest_jerk > 0.5: z_traj_np = np.clip((((np.sin(np.sqrt(x_np**2 + y_np**2)) / (np.sqrt(x_np**2 + y_np**2) + 1)) * np.exp(-0.2 * x_np**2)) + 1) / 2, 0.0, 1.0) + 0.05
+    else: z_traj_np = np.clip(((np.cos(x_np) * np.sin(y_np)) + 1) / 2, 0.1, 0.9) + 0.02
+
+    z_traj_np[-1] = avg_real_confidence + 0.05
+    return X, Y, Z, pd.Series(z_traj_np, index=recent_data.index), status_label
+
 @st.cache_data(ttl=600)
 def generate_empirical_loss_landscape(bot_state, grid_size=40):
     """
     Calculates the Empirical Policy Landscape using true feature distributions.
-    Replaces the synthetic sine wave with a Gaussian KDE over the PCA-reduced tensor space.
-    Maps the 'sharpness' of the current regime's loss surface.
+    Maps the 'sharpness' of the current regime's loss surface using KDE.
     """
     from scipy.stats import gaussian_kde
     from sklearn.decomposition import PCA
@@ -1195,7 +1230,6 @@ def generate_empirical_loss_landscape(bot_state, grid_size=40):
     json_signals = bot_state.get("tickers", bot_state.get("signals", {}))
     raw_features = []
     
-    # Extract the live 30-D tensors
     for t, data in json_signals.items():
         if isinstance(data, dict):
             state_tensor = data.get("entry_state")
@@ -1207,11 +1241,11 @@ def generate_empirical_loss_landscape(bot_state, grid_size=40):
         
     features_np = np.array(raw_features, dtype=float)
     
-    # 1. Apply PCA to project the N-dimensional tensor space into 2 Principal Directions
+    # Project the 30-D tensor space into 2 Principal Directions
     pca = PCA(n_components=2)
     components = pca.fit_transform(features_np)
     
-    # 2. Kernel Density Estimation (KDE) to map the true empirical loss/entropy landscape
+    # Kernel Density Estimation (KDE) to map the true empirical loss/entropy landscape
     x_min, x_max = components[:, 0].min() - 1, components[:, 0].max() + 1
     y_min, y_max = components[:, 1].min() - 1, components[:, 1].max() + 1
     
@@ -1219,14 +1253,14 @@ def generate_empirical_loss_landscape(bot_state, grid_size=40):
     positions = np.vstack([X.ravel(), Y.ravel()])
     kernel = gaussian_kde(components.T)
     
-    # 3. Calculate Z (Invert density to represent the Loss/Entropy surface)
+    # Invert density to represent the Loss/Entropy surface (Valleys = Low Loss)
     Z = np.reshape(kernel(positions).T, X.shape)
-    Z_normalized = 1.0 - (Z / Z.max()) # Invert so high density = low loss (valley)
+    Z_normalized = 1.0 - (Z / Z.max()) 
     
-    # 4. Extract synthetic trajectory targeting the deepest minimum
+    # Synthetic trajectory targeting the deepest minimum
     z_traj_np = np.linspace(Z_normalized.max(), Z_normalized.min(), 20) + np.random.normal(0, 0.02, 20)
     
-    # 5. Evaluate the topology structural integrity
+    # Evaluate topology structural integrity
     mean_surface_loss = Z_normalized.mean()
     if mean_surface_loss < 0.3:
         status_label = "🟢 WIDE MINIMUM (Robust Generalization)"
@@ -1240,29 +1274,33 @@ def generate_empirical_loss_landscape(bot_state, grid_size=40):
 @st.cache_data(ttl=600)
 def generate_stgnn_pca_landscape(bot_state, grid_size=50):
     json_signals = bot_state.get("tickers", bot_state.get("signals", {}))
-    raw_tickers, raw_features, raw_confidences = [], [], []
+    raw_tickers, raw_features, raw_confidences, raw_actions = [], [], [], []
     
     for t, data in json_signals.items():
         if isinstance(data, dict):
             state_tensor = data.get("entry_state")
+            act_raw = data.get("action", 0)
+            try: act_val = int(act_raw)
+            except ValueError: act_val = 0
+            
             if state_tensor and isinstance(state_tensor, list) and len(state_tensor) >= 2:
                 feature_vec = [float(x) for x in state_tensor]
             else:
-                act_raw = data.get("action", 0)
-                feature_vec = [float(data.get("drift_status", 0.0)), float(data.get("confidence_score", data.get("confidence", 0.0))), float(data.get("execution_latency_ms", 0.0)), float(act_raw) if str(act_raw).replace('.','',1).isdigit() else 0.0]
+                feature_vec = [float(data.get("drift_status", 0.0)), float(data.get("confidence_score", data.get("confidence", 0.0))), float(data.get("execution_latency_ms", 0.0)), float(act_val)]
                 
             if feature_vec and len(feature_vec) >= 2:
                 raw_tickers.append(t)
                 raw_features.append(feature_vec)
                 raw_confidences.append(float(data.get("confidence_score", data.get("confidence", 0.0))))
+                raw_actions.append(act_val)
 
     if len(raw_tickers) < 3: return None, None, None, None, "🔴 INSUFFICIENT DATA"
     target_dim = max([len(vec) for vec in raw_features])
     
-    tickers, features, confidences = [], [], []
-    for t, vec, conf in zip(raw_tickers, raw_features, raw_confidences):
+    tickers, features, confidences, actions = [], [], [], []
+    for t, vec, conf, act in zip(raw_tickers, raw_features, raw_confidences, raw_actions):
         if len(vec) == target_dim:
-            tickers.append(t); features.append(vec); confidences.append(conf)
+            tickers.append(t); features.append(vec); confidences.append(conf); actions.append(act)
 
     if len(tickers) < 3: return None, None, None, None, f"🔴 DIMENSION MISMATCH"
     features_np = np.array(features, dtype=float)
@@ -1277,7 +1315,8 @@ def generate_stgnn_pca_landscape(bot_state, grid_size=50):
     for i in range(len(tickers)): Z += confidences[i] * np.exp(-((X - pca1[i])**2 + (Y - pca2[i])**2) / (2 * 1.0**2))
     if Z.max() > 0: Z = np.clip(Z / Z.max(), 0.1, 0.95)
 
-    return X, Y, Z, {'tickers': tickers, 'x': pca1, 'y': pca2, 'z': confidences}, f"🟢 PCA ALIGNED (Var Explained: {sum(pca.explained_variance_ratio_) * 100:.1f}%)"
+    # Returns the 'a': actions dict mapping so the UI can color code the clusters
+    return X, Y, Z, {'tickers': tickers, 'x': pca1, 'y': pca2, 'z': confidences, 'a': actions}, f"🟢 PCA ALIGNED (Var Explained: {sum(pca.explained_variance_ratio_) * 100:.1f}%)"
 
 @st.cache_data(ttl=600)
 def generate_phase_portrait(phys_df, grid_size=20):
@@ -2769,21 +2808,29 @@ with tab5:
             fig_pca.add_trace(go.Surface(x=X_pca, y=Y_pca, z=Z_pca, colorscale='YlGnBu_r', opacity=0.8, showscale=False, lighting=dict(ambient=0.4, diffuse=0.9, roughness=0.1, specular=0.2), hoverinfo='none', cmin=0, cmax=1, contours_z=dict(show=True, usecolormap=True, highlightcolor="#fff", project_z=True)))
             if swarm_data:
                 for i, ticker in enumerate(swarm_data['tickers']):
-                    x_pos, y_pos, z_pos = swarm_data['x'][i], swarm_data['y'][i], swarm_data['z'][i]
+                    x_pos, y_pos, z_pos, act = swarm_data['x'][i], swarm_data['y'][i], swarm_data['z'][i], swarm_data['a'][i]
+                    
+                    # Maps the neural network's intended action to a distinct color
+                    act_color = '#00ff41' if act == 1 else ('#ff4b4b' if act == 2 else '#cccccc')
+                    act_label = 'Long' if act == 1 else ('Short' if act == 2 else 'Hold')
+                    
                     fig_pca.add_trace(go.Scatter3d(x=[x_pos, x_pos], y=[y_pos, y_pos], z=[0, z_pos], mode='lines', line=dict(color='rgba(255, 255, 255, 0.4)', width=2, dash='dot'), showlegend=False, hoverinfo='skip'))
-                    fig_pca.add_trace(go.Scatter3d(x=[x_pos], y=[y_pos], z=[z_pos], mode='markers+text', name=ticker, text=[ticker], textposition="top center", textfont=dict(color="white", size=11, family="Arial Black"), marker=dict(size=10, color=z_pos, colorscale='YlGnBu_r', cmin=0, cmax=1, line=dict(color='white', width=2)), hovertemplate=f'<b>{ticker}</b><br>Conviction: {z_pos:.1%}<br>PCA1: {x_pos:.2f}<br>PCA2: {y_pos:.2f}<extra></extra>'))
+                    fig_pca.add_trace(go.Scatter3d(x=[x_pos], y=[y_pos], z=[z_pos], mode='markers+text', name=ticker, text=[ticker], textposition="top center", textfont=dict(color="white", size=11, family="Arial Black"), marker=dict(size=10, color=act_color, line=dict(color='white', width=2)), hovertemplate=f'<b>{ticker}</b><br>Intent: {act_label}<br>Conviction: {z_pos:.1%}<br>PCA1: {x_pos:.2f}<br>PCA2: {y_pos:.2f}<extra></extra>'))
 
             fig_pca.update_layout(scene=dict(aspectmode='manual', aspectratio=dict(x=1, y=1, z=0.6), xaxis_title='PCA 1 (Macro Factor)', yaxis_title='PCA 2 (Asset Factor)', zaxis_title='True Conviction', xaxis=dict(backgroundcolor="#1e1e1e", gridcolor="#333", showbackground=True, zerolinecolor='white'), yaxis=dict(backgroundcolor="#1e1e1e", gridcolor="#333", showbackground=True, zerolinecolor='white'), zaxis=dict(backgroundcolor="#1e1e1e", gridcolor="#333", showbackground=True, tickvals=[0, 0.5, 1.0], zerolinecolor='white')), paper_bgcolor='rgba(0,0,0,0)', font=dict(color="#cccccc"), margin=dict(l=0, r=0, t=10, b=0), height=500, showlegend=False, annotations=[dict(showarrow=False, text=f"STGNN TOPOLOGY: {pca_status}", xref="paper", yref="paper", x=0.02, y=0.95, xanchor="left", yanchor="top", font=dict(size=14, color="#00ff41", weight="bold"), bgcolor="#1e1e1e")])
             st.plotly_chart(fig_pca, width='stretch')
 
             st.divider()
-            st.markdown("#### 🗺️ 2D PCA Topographical View (Distortion-Free Cluster Map)")
+            st.markdown("#### 🗺️ 2D PCA Topographical View (Action Boundaries)")
             fig_contour = go.Figure()
             fig_contour.add_trace(go.Contour(x=X_pca[0], y=Y_pca[:, 0], z=Z_pca, colorscale='YlGnBu_r', opacity=0.8, contours=dict(showlines=True, coloring='heatmap'), hoverinfo='skip'))
             if swarm_data:
-                c_x, c_y, c_z = swarm_data['x'], swarm_data['y'], swarm_data['z']
+                c_x, c_y, c_z, c_a = swarm_data['x'], swarm_data['y'], swarm_data['z'], swarm_data['a']
+                
+                # Colors the topographical markers based on action intent
+                c_colors = ['#00ff41' if a == 1 else ('#ff4b4b' if a == 2 else '#cccccc') for a in c_a]
                 c_text = [f"{t}<br>{z:.1%}" for t, z in zip(swarm_data['tickers'], c_z)]
-                fig_contour.add_trace(go.Scatter(x=c_x, y=c_y, mode='markers+text', text=c_text, textposition="top center", textfont=dict(color="white", size=10, family="Arial Black"), marker=dict(size=12, color=c_z, colorscale='YlGnBu_r', cmin=0, cmax=1, line=dict(color='white', width=1.5)), name="Live Feature Space", hoverinfo='skip'))
+                fig_contour.add_trace(go.Scatter(x=c_x, y=c_y, mode='markers+text', text=c_text, textposition="top center", textfont=dict(color="white", size=10, family="Arial Black"), marker=dict(size=12, color=c_colors, line=dict(color='white', width=1.5)), name="Live Feature Space", hoverinfo='skip'))
                 
             fig_contour.update_layout(xaxis_title='PCA 1 (Macro Factor)', yaxis_title='PCA 2 (Asset Factor)', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(color="#cccccc"), margin=dict(l=0, r=0, t=10, b=0), height=450)
             st.plotly_chart(fig_contour, width='stretch')
