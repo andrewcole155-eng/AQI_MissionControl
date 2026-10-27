@@ -2731,52 +2731,44 @@ with tab5:
     else: st.info("Not enough data points for Phase Portrait analysis.")
 
     st.divider()
-    st.markdown("### 🎢 Empirical Policy Landscape (Loss Surface)")
-    # ---> FIXED: Calls the true KDE tensor landscape instead of the proxy
-    X_phys, Y_phys, Z_phys, z_traj, phys_status = generate_empirical_loss_landscape(inference_state)
+    
+    # ---------------------------------------------------------
+    # 1. ORIGINAL PORTFOLIO PHYSICS ENGINE
+    # ---------------------------------------------------------
+    st.markdown("### 🎢 Portfolio Physics & Trajectory Surface")
+    X_phys, Y_phys, Z_phys, z_traj, phys_status = generate_proxied_ppo_landscape(phys_df, inference_state, conviction_data)
 
-    if X_phys is not None:
-        col_text2, col_plot2 = st.columns([1, 3])
+    if not phys_df.empty and X_phys is not None:
+        col_text2, col_plot2 = st.columns([1.5, 2.5])
         with col_text2:
-            st.markdown("#### 🌊 Optimization Topology")
-            st.caption("Maps the true generalization surface of the active tensors.")
-            if "WIDE" in phys_status:
+            st.markdown("#### 🌊 Market Turbulence Topology")
+            st.caption("Maps the trajectory of the portfolio through velocity and volatility.")
+            if "HEALTHY" in phys_status:
                 st.success(f"**Topology:** {phys_status}")
-                st.write("The model is resting in a wide minimum. Highly resilient to out-of-sample data variance and macro shocks.")
-            elif "MODERATE" in phys_status:
+                st.write("Market movements are fluid and predictable. The agent navigates clean structural waves.")
+            elif "CHAOS" in phys_status:
                 st.warning(f"**Topology:** {phys_status}")
-                st.write("The loss landscape exhibits standard gradients. Edge is maintained but requires active drift monitoring.")
+                st.write("High jerk/volatility detected. The surface is rugged, indicating choppy execution.")
             else:
                 st.error(f"**Topology:** {phys_status}")
-                st.write("Sharp minimum detected. The model is highly optimized for current conditions but fragile to structural shifts.")
+                st.write("Mode collapse detected. The market has flatlined or data is stalled.")
             st.divider()
-            st.markdown("#### 🛰️ Descent Trajectory")
-            st.write("Visualizes the trajectory mapping down into the primary basin of attraction.")
+            st.markdown("#### 🛰️ The Journey (Orange Line)")
+            st.write("The path represents the last 20 periods of portfolio acceleration and velocity.")
 
         with col_plot2:
             fig_phys = go.Figure()
             fig_phys.add_trace(go.Surface(x=X_phys, y=Y_phys, z=Z_phys, colorscale='YlGnBu_r', opacity=0.8, showscale=False, lighting=dict(ambient=0.4, diffuse=0.9, roughness=0.1, specular=0.2), hoverinfo='none', cmin=0, cmax=1, contours_z=dict(show=True, usecolormap=True, highlightcolor="#fff", project_z=True)))
-            
-            # Map the trajectory correctly against the grid indices
-            recent_len = len(z_traj)
-            x_traj = np.linspace(X_phys.min(), X_phys.mean(), recent_len)
-            y_traj = np.linspace(Y_phys.min(), Y_phys.mean(), recent_len)
-            
-            fig_phys.add_trace(go.Scatter3d(
-                x=x_traj, y=y_traj, z=z_traj, mode='lines+markers', name='Descent Path', 
-                marker=dict(size=6, color=z_traj, colorscale='Viridis', opacity=1.0, line=dict(color='white', width=1)), 
-                line=dict(color='#ff9800', width=5)
-            ))
-            
-            fig_phys.update_layout(
-                scene=dict(aspectmode='manual', aspectratio=dict(x=1, y=1, z=0.5), xaxis_title='Principal Vector X', yaxis_title='Principal Vector Y', zaxis_title='Surrogate Loss (Entropy)', 
-                xaxis=dict(backgroundcolor="#1e1e1e", gridcolor="#333", showbackground=True, zerolinecolor='white'), yaxis=dict(backgroundcolor="#1e1e1e", gridcolor="#333", showbackground=True, zerolinecolor='white'), zaxis=dict(backgroundcolor="#1e1e1e", gridcolor="#333", showbackground=True, tickvals=[0, 0.5, 1.0], zerolinecolor='white')), 
-                paper_bgcolor='rgba(0,0,0,0)', font=dict(color="#cccccc"), margin=dict(l=0, r=0, t=10, b=0), height=500, showlegend=False, 
-                annotations=[dict(showarrow=False, text=f"LANDSCAPE: {phys_status}", xref="paper", yref="paper", x=0.02, y=0.95, xanchor="left", yanchor="top", font=dict(size=14, color="#e91e63", weight="bold"), bgcolor="#1e1e1e")]
-            )
+            recent_phys = phys_df.tail(20) 
+            fig_phys.add_trace(go.Scatter3d(x=recent_phys['vel_smooth'], y=recent_phys['jerk_smooth'], z=z_traj, mode='lines+markers', name='Historical Path', customdata=recent_phys['timestamp'].dt.strftime('%Y-%m-%d %H:%M'), marker=dict(size=abs(recent_phys['jerk']) * 8 + 4, color=recent_phys['acceleration'], colorscale='Viridis', opacity=1.0, line=dict(color='white', width=1), colorbar=dict(title="Accel", len=0.5, y=0.2, x=0.9, tickfont={'color': "#cccccc"})), line=dict(color='#ff9800', width=5), hovertemplate='<b>Date</b>: %{customdata}<br><b>Vel Proxy</b>: %{x:.2f}%<br><b>Jerk Proxy</b>: %{y:.2f}%<extra></extra>'))
+            fig_phys.update_layout(scene=dict(aspectmode='manual', aspectratio=dict(x=1, y=1, z=0.5), xaxis_title='Returns (Velocity)', yaxis_title='Jerk (Volatility)', zaxis_title='Base Conviction', xaxis=dict(backgroundcolor="#1e1e1e", gridcolor="#333", showbackground=True, zerolinecolor='white'), yaxis=dict(backgroundcolor="#1e1e1e", gridcolor="#333", showbackground=True, zerolinecolor='white'), zaxis=dict(backgroundcolor="#1e1e1e", gridcolor="#333", showbackground=True, tickvals=[0, 0.5, 1.0], zerolinecolor='white')), paper_bgcolor='rgba(0,0,0,0)', font=dict(color="#cccccc"), margin=dict(l=0, r=0, t=10, b=0), height=500, showlegend=False, annotations=[dict(showarrow=False, text=f"PHYSICS TOPOLOGY: {phys_status}", xref="paper", yref="paper", x=0.02, y=0.95, xanchor="left", yanchor="top", font=dict(size=14, color="#e91e63", weight="bold"), bgcolor="#1e1e1e")])
             st.plotly_chart(fig_phys, width='stretch')
 
     st.divider()
+
+    # ---------------------------------------------------------
+    # 2. NEW EMPIRICAL LOSS LANDSCAPE
+    # ---------------------------------------------------------
     st.markdown("### 🧬 Empirical Policy Landscape (Loss Surface)")
     st.caption("A mathematically rigorous view of the neural network's generalization capability based on live data distributions.")
     
@@ -2825,11 +2817,15 @@ with tab5:
             st.plotly_chart(fig_emp, width='stretch')
 
     st.divider()
+
+    # ---------------------------------------------------------
+    # 3. ACTION-CLUSTERED PCA TOPOGRAPHY
+    # ---------------------------------------------------------
     st.markdown("### 🌌 AI Policy Landscape & Feature Space (PCA)")
     X_pca, Y_pca, Z_pca, swarm_data, pca_status = generate_stgnn_pca_landscape(inference_state)
 
     if X_pca is not None:
-        col_text3, col_plot3 = st.columns([1, 3])
+        col_text3, col_plot3 = st.columns([1.5, 2.5])
         with col_text3:
             st.markdown("#### 🧠 Agent Brain State")
             st.caption("Translating the 30-D STGNN mathematical terrain into actionable logic.")
@@ -2844,7 +2840,7 @@ with tab5:
             st.write("Each glowing orb represents an asset mapped by PCA:")
             st.write("- **PCA 1 (X-Axis):** Dominant Macro/Market drift.")
             st.write("- **PCA 2 (Y-Axis):** Asset-specific divergence.")
-            st.write("- **Clusters:** Tickers grouped tightly are exhibiting identical structural setups to the neural network.")
+            st.write("- **Clusters:** Assets are colored by their intended action (Green=Long, Red=Short, Grey=Hold), proving whether the model successfully separates distinct market regimes.")
 
         with col_plot3:
             fig_pca = go.Figure()
@@ -2853,7 +2849,6 @@ with tab5:
                 for i, ticker in enumerate(swarm_data['tickers']):
                     x_pos, y_pos, z_pos, act = swarm_data['x'][i], swarm_data['y'][i], swarm_data['z'][i], swarm_data['a'][i]
                     
-                    # Maps the neural network's intended action to a distinct color
                     act_color = '#00ff41' if act == 1 else ('#ff4b4b' if act == 2 else '#cccccc')
                     act_label = 'Long' if act == 1 else ('Short' if act == 2 else 'Hold')
                     
@@ -2870,7 +2865,6 @@ with tab5:
             if swarm_data:
                 c_x, c_y, c_z, c_a = swarm_data['x'], swarm_data['y'], swarm_data['z'], swarm_data['a']
                 
-                # Colors the topographical markers based on action intent
                 c_colors = ['#00ff41' if a == 1 else ('#ff4b4b' if a == 2 else '#cccccc') for a in c_a]
                 c_text = [f"{t}<br>{z:.1%}" for t, z in zip(swarm_data['tickers'], c_z)]
                 fig_contour.add_trace(go.Scatter(x=c_x, y=c_y, mode='markers+text', text=c_text, textposition="top center", textfont=dict(color="white", size=10, family="Arial Black"), marker=dict(size=12, color=c_colors, line=dict(color='white', width=1.5)), name="Live Feature Space", hoverinfo='skip'))
