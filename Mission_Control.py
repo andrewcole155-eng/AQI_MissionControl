@@ -2855,30 +2855,32 @@ with tab5:
                     fig_pca.add_trace(go.Scatter3d(x=[x_pos], y=[y_pos], z=[z_pos], mode='markers+text', name=ticker, text=[ticker], textposition="top center", textfont=dict(color="white", size=11, family="Arial Black"), marker=dict(size=10, color=act_color, line=dict(color='white', width=2)), hovertemplate=f'<b>{ticker}</b><br>Intent: {act_label}<br>Conviction: {z_pos:.1%}<br>PCA1: {x_pos:.2f}<br>PCA2: {y_pos:.2f}<extra></extra>'))
 
             fig_pca.update_layout(scene=dict(aspectmode='manual', aspectratio=dict(x=1, y=1, z=0.6), xaxis_title='PCA 1 (Macro Factor)', yaxis_title='PCA 2 (Asset Factor)', zaxis_title='True Conviction', xaxis=dict(backgroundcolor="#1e1e1e", gridcolor="#333", showbackground=True, zerolinecolor='white'), yaxis=dict(backgroundcolor="#1e1e1e", gridcolor="#333", showbackground=True, zerolinecolor='white'), zaxis=dict(backgroundcolor="#1e1e1e", gridcolor="#333", showbackground=True, tickvals=[0, 0.5, 1.0], zerolinecolor='white')), paper_bgcolor='rgba(0,0,0,0)', font=dict(color="#cccccc"), margin=dict(l=0, r=0, t=10, b=0), height=500, showlegend=False, annotations=[dict(showarrow=False, text=f"STGNN TOPOLOGY: {pca_status}", xref="paper", yref="paper", x=0.02, y=0.95, xanchor="left", yanchor="top", font=dict(size=14, color="#00ff41", weight="bold"), bgcolor="#1e1e1e")])
+            # (Keep this line exactly as is)
             st.plotly_chart(fig_pca, width='stretch')
 
-            st.divider()
+        # --- FIXED: Dedented to break out of col_plot3 ---
+        st.divider()
+        
+        col_text4, col_plot4 = st.columns([1.5, 2.5])
+        with col_text4:
+            st.markdown("#### 🗺️ 2D PCA Topographical View")
+            st.caption("Action Boundaries & Cluster Distribution.")
+            st.write("This is a flattened, top-down view of the 3D map above.")
+            st.write("This map removes the 'height' (conviction) and focuses purely on distance. It makes it very easy to spot outliers—if one dot is floating completely alone far away from the others, that asset is experiencing unique, decoupled market conditions.")
+        
+        with col_plot4:
+            fig_contour = go.Figure()
+            fig_contour.add_trace(go.Contour(x=X_pca[0], y=Y_pca[:, 0], z=Z_pca, colorscale='YlGnBu_r', opacity=0.8, contours=dict(showlines=True, coloring='heatmap'), hoverinfo='skip'))
+            if swarm_data:
+                c_x, c_y, c_z, c_a = swarm_data['x'], swarm_data['y'], swarm_data['z'], swarm_data['a']
+                
+                c_colors = ['#00ff41' if a == 1 else ('#ff4b4b' if a == 2 else '#cccccc') for a in c_a]
+                c_text = [f"{t}<br>{z:.1%}" for t, z in zip(swarm_data['tickers'], c_z)]
+                fig_contour.add_trace(go.Scatter(x=c_x, y=c_y, mode='markers+text', text=c_text, textposition="top center", textfont=dict(color="white", size=10, family="Arial Black"), marker=dict(size=12, color=c_colors, line=dict(color='white', width=1.5)), name="Live Feature Space", hoverinfo='skip'))
+                
+            fig_contour.update_layout(xaxis_title='PCA 1 (Macro Factor)', yaxis_title='PCA 2 (Asset Factor)', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(color="#cccccc"), margin=dict(l=0, r=0, t=10, b=0), height=450)
+            st.plotly_chart(fig_contour, width='stretch')
             
-            # ---> FIXED: Added split-column formatting and descriptive text for the 2D Contour Map <---
-            col_text4, col_plot4 = st.columns([1.5, 2.5])
-            with col_text4:
-                st.markdown("#### 🗺️ 2D PCA Topographical View")
-                st.caption("Action Boundaries & Cluster Distribution.")
-                st.write("This is a flattened, top-down view of the 3D map above.")
-                st.write("This map removes the 'height' (conviction) and focuses purely on distance. It makes it very easy to spot outliers—if one dot is floating completely alone far away from the others, that asset is experiencing unique, decoupled market conditions.")
-            
-            with col_plot4:
-                fig_contour = go.Figure()
-                fig_contour.add_trace(go.Contour(x=X_pca[0], y=Y_pca[:, 0], z=Z_pca, colorscale='YlGnBu_r', opacity=0.8, contours=dict(showlines=True, coloring='heatmap'), hoverinfo='skip'))
-                if swarm_data:
-                    c_x, c_y, c_z, c_a = swarm_data['x'], swarm_data['y'], swarm_data['z'], swarm_data['a']
-                    
-                    c_colors = ['#00ff41' if a == 1 else ('#ff4b4b' if a == 2 else '#cccccc') for a in c_a]
-                    c_text = [f"{t}<br>{z:.1%}" for t, z in zip(swarm_data['tickers'], c_z)]
-                    fig_contour.add_trace(go.Scatter(x=c_x, y=c_y, mode='markers+text', text=c_text, textposition="top center", textfont=dict(color="white", size=10, family="Arial Black"), marker=dict(size=12, color=c_colors, line=dict(color='white', width=1.5)), name="Live Feature Space", hoverinfo='skip'))
-                    
-                fig_contour.update_layout(xaxis_title='PCA 1 (Macro Factor)', yaxis_title='PCA 2 (Asset Factor)', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(color="#cccccc"), margin=dict(l=0, r=0, t=10, b=0), height=450)
-                st.plotly_chart(fig_contour, width='stretch')
     else: st.info("Gathering historical Policy Landscape data. Waiting for Daily Inference Agent payload...")
 
 with tab6:
