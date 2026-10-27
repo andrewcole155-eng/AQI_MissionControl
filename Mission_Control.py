@@ -2701,7 +2701,7 @@ with tab5:
     st.caption("A 2D representation of the market's state machine. Removes time to show cycle structure, momentum flow, and regime probability.")
     
     if not phys_df.empty:
-        col_text1, col_plot1 = st.columns([1, 3])
+        col_text1, col_plot1 = st.columns([1.5, 2.5])
         
         latest_vel, latest_acc, latest_jerk_abs, latest_dfe = phys_df['vel_smooth'].iloc[-1], phys_df['acc_smooth'].iloc[-1], abs(phys_df['jerk_smooth'].iloc[-1]), phys_df['dfe'].iloc[-1]
         
@@ -2718,12 +2718,14 @@ with tab5:
                 st.write("System is near equilibrium. Momentum is compressed.")
                 
             st.divider()
-            st.markdown("#### 🗺️ Regime Classification")
-            if latest_vel > 0 and latest_acc > 0: st.success("**TREND (Top Right)**\n\nExpanding bull market.")
-            elif latest_vel > 0 and latest_acc <= 0: st.warning("**DISTRIBUTION (Bottom Right)**\n\nSlowing bull market.")
-            elif latest_vel <= 0 and latest_acc < 0: st.error("**PANIC / SHOCK (Bottom Left)**\n\nExpanding bear market.")
-            elif latest_vel <= 0 and latest_acc >= 0: st.info("**ACCUMULATION (Top Left)**\n\nSlowing bear market.")
-            else: st.write("Transitioning across zero-bound.")
+            
+            with st.expander("📖 How to Read This Chart (Simply)", expanded=True):
+                st.write("**Think of the market like a car driving on a map:**")
+                st.write("• **Right side (Green):** The car is driving forward (Making money).")
+                st.write("• **Left side (Red/Blue):** The car is driving backward (Losing money).")
+                st.write("• **Top half:** The car is pressing the gas pedal (Speeding up).")
+                st.write("• **Bottom half:** The car is hitting the brakes (Slowing down).")
+                st.write("The white line is where the car drove recently. If the car drives too far away from the center crosshair (0,0), it usually snaps back to the middle like a rubber band.")
                 
         with col_plot1:
             fig_phase = generate_phase_portrait(phys_df)
@@ -2742,19 +2744,20 @@ with tab5:
         col_text2, col_plot2 = st.columns([1.5, 2.5])
         with col_text2:
             st.markdown("#### 🌊 Market Turbulence Topology")
-            st.caption("Maps the trajectory of the portfolio through velocity and volatility.")
             if "HEALTHY" in phys_status:
                 st.success(f"**Topology:** {phys_status}")
-                st.write("Market movements are fluid and predictable. The agent navigates clean structural waves.")
             elif "CHAOS" in phys_status:
                 st.warning(f"**Topology:** {phys_status}")
-                st.write("High jerk/volatility detected. The surface is rugged, indicating choppy execution.")
             else:
                 st.error(f"**Topology:** {phys_status}")
-                st.write("Mode collapse detected. The market has flatlined or data is stalled.")
+
             st.divider()
-            st.markdown("#### 🛰️ The Journey (Orange Line)")
-            st.write("The path represents the last 20 periods of portfolio acceleration and velocity.")
+            
+            with st.expander("📖 How to Read This Chart (Simply)", expanded=True):
+                st.write("**Think of this like a boat on the ocean:**")
+                st.write("• **Smooth Blue Valleys:** Calm, predictable waters. It is safe for the bot to trade here.")
+                st.write("• **Spiky Yellow/White Mountains:** A violent storm. The market is acting crazy and unpredictable.")
+                st.write("• **The Orange Line:** The path your boat has taken over the last few weeks. We want our orange line to stay safely down in the calm blue valleys.")
 
         with col_plot2:
             fig_phys = go.Figure()
@@ -2780,19 +2783,16 @@ with tab5:
             st.markdown("#### 🧠 Optimization Topology")
             if "WIDE" in emp_status:
                 st.success(f"**State:** {emp_status}")
-                st.write("**What this means:** The model has found a 'wide valley' in the loss landscape. Minor market shocks or unexpected feature drifts won't drastically spike the error rate. This indicates excellent out-of-sample generalization and stability.")
             elif "MODERATE" in emp_status:
                 st.warning(f"**State:** {emp_status}")
-                st.write("**What this means:** The model is in a standard gradient. It is performing well, but the margin of error is narrower. Moderate monitoring is required as macro conditions shift.")
             else:
                 st.error(f"**State:** {emp_status}")
-                st.write("**What this means:** The model is trapped in a 'sharp minimum'. It is hyper-optimized for current conditions, meaning even a tiny shift in market data will cause a massive spike in errors. High risk of overfitting and regime fragility.")
             
             st.divider()
-            st.markdown("#### 🗺️ How to Read This Chart")
-            st.write("- **The Surface (Topology):** Represents the actual feature density of your live execution environment. Deeper blue valleys equal safe zones of low algorithmic confusion.")
-            st.write("- **The Valleys:** A flatter, wider basin means your model has a robust margin of safety.")
-            st.write("- **The Orange Path:** Shows how a gradient descent optimizer would mathematically walk down into the safest generalization basin.")
+            with st.expander("📖 How to Read This Chart (Simply)", expanded=True):
+                st.write("**Think of this like a marble resting in a bowl:**")
+                st.write("• **A Wide, Blue Bowl (Wide Minimum):** If you bump the table, the marble rolls a little bit but stays safely inside. The bot is well-adjusted and safe from unexpected surprises.")
+                st.write("• **A Sharp, Yellow Spike (Sharp Minimum):** The marble is balanced on the tip of a needle. Even a tiny breeze (market shift) will cause it to fall off and crash. This means the bot is dangerously 'over-memorizing' the market.")
 
         with col_plot_emp:
             fig_emp = go.Figure()
@@ -2828,19 +2828,18 @@ with tab5:
         col_text3, col_plot3 = st.columns([1.5, 2.5])
         with col_text3:
             st.markdown("#### 🧠 Agent Brain State")
-            st.caption("Translating the 30-D STGNN mathematical terrain into actionable logic.")
             if "ALIGNED" in pca_status:
                 st.success(f"**Topology:** {pca_status}")
-                st.write("Peaks represent regions of the 30-D feature space where the model has high conviction.")
             else:
                 st.error(f"**Topology:** {pca_status}")
-                st.write("Insufficient tensor data to map the feature space.")
+                
             st.divider()
-            st.markdown("#### 🛸 Neural Clustering")
-            st.write("Each glowing orb represents an asset mapped by PCA:")
-            st.write("- **PCA 1 (X-Axis):** Dominant Macro/Market drift.")
-            st.write("- **PCA 2 (Y-Axis):** Asset-specific divergence.")
-            st.write("- **Clusters:** Assets are colored by their intended action (Green=Long, Red=Short, Grey=Hold), proving whether the model successfully separates distinct market regimes.")
+            with st.expander("📖 How to Read This Chart (Simply)", expanded=True):
+                st.write("**This is a map of how the AI 'sorts' stocks in its brain:**")
+                st.write("• Instead of sorting by price, the AI sorts stocks by 30 complex math clues.")
+                st.write("• **Dots close together:** The AI thinks these stocks look exactly the same right now.")
+                st.write("• **Dots far apart:** The AI thinks these stocks are acting totally differently.")
+                st.write("• **The Colors:** Green = The AI wants to Buy. Red = The AI wants to Sell. Grey = Hold. We want to see all the green dots grouped together and the red dots far away, proving the AI can tell the difference!")
 
         with col_plot3:
             fig_pca = go.Figure()
@@ -2859,18 +2858,27 @@ with tab5:
             st.plotly_chart(fig_pca, width='stretch')
 
             st.divider()
-            st.markdown("#### 🗺️ 2D PCA Topographical View (Action Boundaries)")
-            fig_contour = go.Figure()
-            fig_contour.add_trace(go.Contour(x=X_pca[0], y=Y_pca[:, 0], z=Z_pca, colorscale='YlGnBu_r', opacity=0.8, contours=dict(showlines=True, coloring='heatmap'), hoverinfo='skip'))
-            if swarm_data:
-                c_x, c_y, c_z, c_a = swarm_data['x'], swarm_data['y'], swarm_data['z'], swarm_data['a']
-                
-                c_colors = ['#00ff41' if a == 1 else ('#ff4b4b' if a == 2 else '#cccccc') for a in c_a]
-                c_text = [f"{t}<br>{z:.1%}" for t, z in zip(swarm_data['tickers'], c_z)]
-                fig_contour.add_trace(go.Scatter(x=c_x, y=c_y, mode='markers+text', text=c_text, textposition="top center", textfont=dict(color="white", size=10, family="Arial Black"), marker=dict(size=12, color=c_colors, line=dict(color='white', width=1.5)), name="Live Feature Space", hoverinfo='skip'))
-                
-            fig_contour.update_layout(xaxis_title='PCA 1 (Macro Factor)', yaxis_title='PCA 2 (Asset Factor)', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(color="#cccccc"), margin=dict(l=0, r=0, t=10, b=0), height=450)
-            st.plotly_chart(fig_contour, width='stretch')
+            
+            # ---> FIXED: Added split-column formatting and descriptive text for the 2D Contour Map <---
+            col_text4, col_plot4 = st.columns([1.5, 2.5])
+            with col_text4:
+                st.markdown("#### 🗺️ 2D PCA Topographical View")
+                st.caption("Action Boundaries & Cluster Distribution.")
+                st.write("This is a flattened, top-down view of the 3D map above.")
+                st.write("This map removes the 'height' (conviction) and focuses purely on distance. It makes it very easy to spot outliers—if one dot is floating completely alone far away from the others, that asset is experiencing unique, decoupled market conditions.")
+            
+            with col_plot4:
+                fig_contour = go.Figure()
+                fig_contour.add_trace(go.Contour(x=X_pca[0], y=Y_pca[:, 0], z=Z_pca, colorscale='YlGnBu_r', opacity=0.8, contours=dict(showlines=True, coloring='heatmap'), hoverinfo='skip'))
+                if swarm_data:
+                    c_x, c_y, c_z, c_a = swarm_data['x'], swarm_data['y'], swarm_data['z'], swarm_data['a']
+                    
+                    c_colors = ['#00ff41' if a == 1 else ('#ff4b4b' if a == 2 else '#cccccc') for a in c_a]
+                    c_text = [f"{t}<br>{z:.1%}" for t, z in zip(swarm_data['tickers'], c_z)]
+                    fig_contour.add_trace(go.Scatter(x=c_x, y=c_y, mode='markers+text', text=c_text, textposition="top center", textfont=dict(color="white", size=10, family="Arial Black"), marker=dict(size=12, color=c_colors, line=dict(color='white', width=1.5)), name="Live Feature Space", hoverinfo='skip'))
+                    
+                fig_contour.update_layout(xaxis_title='PCA 1 (Macro Factor)', yaxis_title='PCA 2 (Asset Factor)', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(color="#cccccc"), margin=dict(l=0, r=0, t=10, b=0), height=450)
+                st.plotly_chart(fig_contour, width='stretch')
     else: st.info("Gathering historical Policy Landscape data. Waiting for Daily Inference Agent payload...")
 
 with tab6:
