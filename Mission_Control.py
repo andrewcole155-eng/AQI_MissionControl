@@ -3083,7 +3083,11 @@ with tab6:
             # --- ENHANCED NARRATIVE & SYSTEM DIRECTIVES ---
             ir_diff = live_ir - base_ir
             
-            if 'QUARANTINED' in status:
+            # ---> NEW: Catch the earnings quarantine first <---
+            if 'EARNINGS' in status:
+                narrative = "<strong>Condition:</strong> Scheduled corporate earnings/binary event detected within the next 48 hours."
+                directive = "<span style='color: #ffb000;'><strong>System Directive:</strong> 🛡️ <em>Earnings Quarantine.</em> Position force-closed to protect capital from unpredictable extended-hours gap risk.</span>"
+            elif 'QUARANTINED' in status:
                 narrative = "<strong>Condition:</strong> The AI failed to find a mathematical edge during weekend training (Base IR &lt; 0)."
                 directive = "<span style='color: #ffb000;'><strong>System Directive:</strong> 🛑 <em>Trading Locked.</em> Capital is protected in cash until the next weekend retraining cycle generates a profitable blueprint.</span>"
             elif 'ABORTED' in status:
