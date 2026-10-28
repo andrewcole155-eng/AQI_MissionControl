@@ -1621,6 +1621,49 @@ with tab1:
         except Exception as e:
             st.cache_data.clear(); st.warning(f"Macro feed disconnected: {e}"); return None
 
+    @st.cache_data(ttl=14400) # Cache for 4 hours to avoid hammering Yahoo Finance
+    def fetch_fleet_earnings_calendar(monitored_tickers):
+        earnings_rows = []
+        now_utc = pd.Timestamp.now(tz='UTC')
+        for sym in monitored_tickers:
+            try:
+                t_obj = yf.Ticker(sym)
+                cal = t_obj.calendar
+                if isinstance(cal, dict) and 'Earnings Date' in cal:
+                    e_dates = cal['Earnings Date']
+                    next_earn = e_dates[0] if isinstance(e_dates, list) else e_dates
+                    if next_earn:
+                        earn_dt = pd.to_datetime(next_earn, utc=True)
+                        # Only show future or very recent earnings
+                        if earn_dt > now_utc - pd.Timedelta(days=1):
+                            days_until = (earn_dt - now_utc).total_seconds() / (3600.0 * 24.0)
+                            
+                            # Format for the UI
+                            if days_until <= 2:
+                                urgency = "🚨 IMMINENT"
+                            elif days_until <= 7:
+                                urgency = "🟡 Next Week"
+                            else:
+                                urgency = "🟢 Safe"
+                                
+                            earnings_rows.append({
+                                "Ticker": sym, 
+                                "Countdown": days_until,
+                                "Status": urgency,
+                                "Earnings Date (UTC)": earn_dt.strftime('%b %d, %Y (%H:%M)')
+                            })
+            except Exception:
+                continue
+                
+        if earnings_rows:
+            df_earn = pd.DataFrame(earnings_rows)
+            # Sort by closest date first
+            df_earn = df_earn.sort_values(by="Countdown", ascending=True)
+            # Format the float into a clean string after sorting
+            df_earn['Countdown'] = df_earn['Countdown'].apply(lambda x: f"{x:.1f} Days")
+            return df_earn
+        return pd.DataFrame()
+
     upcoming_macro = fetch_macro_calendar_dashboard()
     
     if upcoming_macro:
@@ -1643,6 +1686,25 @@ with tab1:
             st.success("🟢 **System Posture:** STANDARD TRAIL & TARGETS"); st.info("No immediate Tier-1 Macro Events pending.")
     else:
         st.success("🟢 **System Posture:** STANDARD TRAIL & TARGETS"); st.info("No critical Tier-1 Macro Events scheduled for USD/JPY for the remainder of the week.")
+
+    # ---> NEW: FLEET EARNINGS COUNTDOWN WIDGET <---
+    asset_index_map = load_global_config().get("asset_index_map", {})
+    monitored_tickers = list(asset_index_map.keys()) if asset_index_map else []
+    
+    if monitored_tickers:
+        df_earnings = fetch_fleet_earnings_calendar(monitored_tickers)
+        if not df_earnings.empty:
+            with st.expander("🏢 Corporate Earnings Shock Radar (12-Ticker Fleet)", expanded=True):
+                st.caption("Auto-liquidations trigger at T-minus 2.0 Days (48 hours) to insulate against discontinuous gap risk.")
+                
+                # Highlight imminent threats in red
+                def highlight_imminent(val):
+                    if "IMMINENT" in str(val): return 'color: #ff4b4b; font-weight: bold;'
+                    elif "Next Week" in str(val): return 'color: #ffb000; font-weight: bold;'
+                    return ''
+                
+                styled_df = df_earnings.style.map(highlight_imminent, subset=['Status'])
+                st.dataframe(styled_df, width='stretch', hide_index=True)
 
     st.divider()
 
