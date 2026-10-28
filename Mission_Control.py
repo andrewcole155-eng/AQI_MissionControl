@@ -536,10 +536,15 @@ def parse_latest_run_logic(logs, bot_state=None, df_ex=None):
                     readiness_status = "READY"
 
                 # --- FIX: Respect Backend Readiness & Empirical Override Flags ---
-                if readiness_status == "SUSPENDED_BASE_EDGE" or (base_ir <= 0.0 and readiness_status != "READY"):
+                if readiness_status == "SUSPENDED_BASE_EDGE" or (base_ir <= 0.0 and readiness_status not in ["READY", "SUSPENDED_EARNINGS"]):
                     status_clean = "🔴 QUARANTINED (Negative Base Edge)"
                     decay_val = 0.0
                     lifecycle_stage = "🔴 HALTED"
+                # ---> NEW: Explicitly catch the Earnings Shield <---
+                elif readiness_status == "SUSPENDED_EARNINGS":
+                    status_clean = "🟡 QUARANTINED (EARNINGS SHIELD)"
+                    decay_val = 1.0
+                    lifecycle_stage = "🛡️ HALTED (Corporate Action)"
                 elif readiness_status == "READY" and base_ir <= 0.0:
                     status_clean = "🟢 OPTIMAL (Empirical Override)"
                     decay_val = 1.0 # Bypass decay penalty
