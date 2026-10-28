@@ -1621,7 +1621,7 @@ with tab1:
         except Exception as e:
             st.cache_data.clear(); st.warning(f"Macro feed disconnected: {e}"); return None
 
-    @st.cache_data(ttl=14400) # Cache for 4 hours to avoid hammering Yahoo Finance
+    @st.cache_data(ttl=14400)
     def fetch_fleet_earnings_calendar(monitored_tickers):
         earnings_rows = []
         now_utc = pd.Timestamp.now(tz='UTC')
@@ -1629,38 +1629,55 @@ with tab1:
             try:
                 t_obj = yf.Ticker(sym)
                 cal = t_obj.calendar
+                e_dates = None
                 if isinstance(cal, dict) and 'Earnings Date' in cal:
                     e_dates = cal['Earnings Date']
+                elif hasattr(cal, 'get'):
+                    e_dates = cal.get('Earnings Date')
+
+                if e_dates:
                     next_earn = e_dates[0] if isinstance(e_dates, list) else e_dates
-                    if next_earn:
-                        earn_dt = pd.to_datetime(next_earn, utc=True)
-                        # Only show future or very recent earnings
-                        if earn_dt > now_utc - pd.Timedelta(days=1):
-                            days_until = (earn_dt - now_utc).total_seconds() / (3600.0 * 24.0)
-                            
-                            # Format for the UI
-                            if days_until <= 2:
-                                urgency = "🚨 IMMINENT"
-                            elif days_until <= 7:
-                                urgency = "🟡 Next Week"
-                            else:
-                                urgency = "🟢 Safe"
-                                
-                            earnings_rows.append({
-                                "Ticker": sym, 
-                                "Countdown": days_until,
-                                "Status": urgency,
-                                "Earnings Date (UTC)": earn_dt.strftime('%b %d, %Y (%H:%M)')
-                            })
+                    earn_dt = pd.to_datetime(next_earn, utc=True)
+                    days_until = (earn_dt - now_utc).total_seconds() / (3600.0 * 24.0)
+
+                    # 1. Freshly Reported within the last 5 days
+                    if -5.0 <= days_until <= 0.0:
+                        urgency = "🏁 Reported"
+                        countdown_str = f"Passed ({abs(days_until):.1f}d ago)"
+                    # 2. Upcoming Releases
+                    elif days_until > 0.0:
+                        if days_until <= 2.0:
+                            urgency = "🚨 IMMINENT"
+                        elif days_until <= 7.0:
+                            urgency = "🟡 Next Week"
+                        else:
+                            urgency = "🟢 Safe"
+                        countdown_str = f"{days_until:.1f} Days"
+                    else:
+                        continue
+
+                    earnings_rows.append({
+                        "Ticker": sym, 
+                        "Countdown": countdown_str,
+                        "raw_days": days_until,
+                        "Status": urgency,
+                        "Earnings Date (UTC)": earn_dt.strftime('%b %d, %Y (%H:%M)')
+                    })
+                else:
+                    # Ticker has no forward date listed in Yahoo yet (post-earnings quiet period)
+                    earnings_rows.append({
+                        "Ticker": sym,
+                        "Countdown": "Post-Earnings (~90d+)",
+                        "raw_days": 999.0,
+                        "Status": "🟢 Safe (Reported)",
+                        "Earnings Date (UTC)": "Q4/FY Date Pending"
+                    })
             except Exception:
                 continue
-                
+
         if earnings_rows:
             df_earn = pd.DataFrame(earnings_rows)
-            # Sort by closest date first
-            df_earn = df_earn.sort_values(by="Countdown", ascending=True)
-            # Format the float into a clean string after sorting
-            df_earn['Countdown'] = df_earn['Countdown'].apply(lambda x: f"{x:.1f} Days")
+            df_earn = df_earn.sort_values(by="raw_days", ascending=True).drop(columns=['raw_days'])
             return df_earn
         return pd.DataFrame()
 
