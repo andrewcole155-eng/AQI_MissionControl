@@ -1535,40 +1535,42 @@ def generate_accounting_ledger(orders, asset_index_map, api=None):
 
     df_trades = pd.DataFrame(trades) if trades else pd.DataFrame()
 
-    # Fetch Dividends and Fees from Alpaca Activities if API is provided
+    # Robust Activities Fetching: Pull all activities and filter in Python
     div_map_fy, fee_map_fy = {}, {}
     div_map_m, fee_map_m = {}, {}
     
     if api:
         try:
-            divs = api.get_activities(activity_type='DIV')
-            for d in divs:
-                dt = pd.to_datetime(d.date).tz_convert('UTC')
+            activities = api.get_activities()
+            for act in activities:
+                act_type = getattr(act, 'activity_type', getattr(act, 'type', ''))
+                desc = str(getattr(act, 'description', '')).lower()
+                net_amt = float(getattr(act, 'net_amount', getattr(act, 'amount', 0.0)))
+                date_str = getattr(act, 'date', getattr(act, 'transaction_time', ''))
+                
+                if not date_str:
+                    continue
+                    
+                dt = pd.to_datetime(date_str).tz_convert('UTC')
                 fy_yr = dt.year + 1 if dt.month >= 7 else dt.year
                 fy_l = f"FY{str(fy_yr)[-2:]}"
                 m_l = dt.strftime('%b-%y')
-                amt = float(d.net_amount)
-                div_map_fy[fy_l] = div_map_fy.get(fy_l, 0.0) + amt
-                div_map_m[m_l] = div_map_m.get(m_l, 0.0) + amt
-        except Exception:
-            pass
-            
-        try:
-            fees = api.get_activities(activity_type='FEE')
-            for f in fees:
-                dt = pd.to_datetime(f.date).tz_convert('UTC')
-                fy_yr = dt.year + 1 if dt.month >= 7 else dt.year
-                fy_l = f"FY{str(fy_yr)[-2:]}"
-                m_l = dt.strftime('%b-%y')
-                amt = abs(float(f.net_amount))
-                fee_map_fy[fy_l] = fee_map_fy.get(fy_l, 0.0) + amt
-                fee_map_m[m_l] = fee_map_m.get(m_l, 0.0) + amt
-        except Exception:
-            pass
+                
+                # Check for Dividends
+                if act_type == 'DIV' or 'dividend' in desc:
+                    div_map_fy[fy_l] = div_map_fy.get(fy_l, 0.0) + net_amt
+                    div_map_m[m_l] = div_map_m.get(m_l, 0.0) + net_amt
+                
+                # Check for Fees (CAT, REG, or general FEE activity types)
+                elif act_type in ['FEE', 'TRANS'] or 'fee' in desc or 'cat fee' in desc or 'reg fee' in desc:
+                    fee_amt = abs(net_amt)
+                    fee_map_fy[fy_l] = fee_map_fy.get(fy_l, 0.0) + fee_amt
+                    fee_map_m[m_l] = fee_map_m.get(m_l, 0.0) + fee_amt
+        except Exception as e:
+            print(f"Alpaca Activities Fetch Warning: {e}")
 
     # 1. Generate Financial Year Summary
     fy_data = []
-    fy_groups = df_trades.groupby('Financial Year') if not df_trades.empty else []
     all_fys = set(list(div_map_fy.keys()) + list(fee_map_fy.keys()))
     if not df_trades.empty: all_fys.update(df_trades['Financial Year'].unique())
     
