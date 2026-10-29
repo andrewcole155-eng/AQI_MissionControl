@@ -1459,9 +1459,8 @@ def format_log_line(line):
 def generate_accounting_ledger(orders, asset_index_map):
     """Reconstructs raw Alpaca fills into monthly and financial year accounting DataFrames."""
     if not orders: return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-    
-    filled_orders = sorted([o for o in orders if isinstance(o, dict) and o.get('status'] == 'filled'), key=lambda x: x.get('filled_at', ''))
-    
+
+    filled_orders = sorted([o for o in orders if isinstance(o, dict) and o.get('status') == 'filled'], key=lambda x: x.get('filled_at', ''))
     trades = []
     inventory = {}
     trade_counter = 1
