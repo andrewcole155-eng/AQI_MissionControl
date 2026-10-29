@@ -28,6 +28,8 @@ import warnings
 
 # --- NEW IMPORTS FOR PDF GENERATION ---
 import io
+import matplotlib
+matplotlib.use('Agg')  # <--- CRITICAL FIX: Forces thread-safe headless rendering
 import matplotlib.pyplot as plt
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import landscape, A4
@@ -1593,7 +1595,7 @@ def build_pdf_report(df_trades, df_monthly):
         
         ax.set_title("Trades over time")
         ax.grid(True, linestyle='--', alpha=0.5)
-        plt.xticks(rotation=45)
+        ax.tick_params(axis='x', rotation=45) # <--- FIXED LINE
         fig.tight_layout()
         
         # Save to memory buffer
