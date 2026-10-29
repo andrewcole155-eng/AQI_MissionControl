@@ -1456,8 +1456,8 @@ def format_log_line(line):
 # ==========================================
 # --- REPORTLAB PDF GENERATION ENGINE ---
 # ==========================================
-def generate_accounting_ledger(orders, asset_index_map):
-    """Reconstructs raw Alpaca fills into monthly and financial year accounting DataFrames."""
+def generate_accounting_ledger(orders, asset_index_map, api=None):
+    """Reconstructs raw Alpaca fills, dividends, and fees into monthly and FY accounting DataFrames."""
     if not orders: return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     
     filled_orders = sorted([o for o in orders if isinstance(o, dict) and o.get('status') == 'filled'], key=lambda x: x.get('filled_at', ''))
@@ -1533,30 +1533,70 @@ def generate_accounting_ledger(orders, asset_index_map):
                 if inv['qty'] == 0:
                     inv['side'] = None
 
-    if not trades: return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    df_trades = pd.DataFrame(trades) if trades else pd.DataFrame()
+
+    # Fetch Dividends and Fees from Alpaca Activities if API is provided
+    div_map_fy, fee_map_fy = {}, {}
+    div_map_m, fee_map_m = {}, {}
     
-    df_trades = pd.DataFrame(trades)
-    
+    if api:
+        try:
+            divs = api.get_activities(activity_type='DIV')
+            for d in divs:
+                dt = pd.to_datetime(d.date).tz_convert('UTC')
+                fy_yr = dt.year + 1 if dt.month >= 7 else dt.year
+                fy_l = f"FY{str(fy_yr)[-2:]}"
+                m_l = dt.strftime('%b-%y')
+                amt = float(d.net_amount)
+                div_map_fy[fy_l] = div_map_fy.get(fy_l, 0.0) + amt
+                div_map_m[m_l] = div_map_m.get(m_l, 0.0) + amt
+        except Exception:
+            pass
+            
+        try:
+            fees = api.get_activities(activity_type='FEE')
+            for f in fees:
+                dt = pd.to_datetime(f.date).tz_convert('UTC')
+                fy_yr = dt.year + 1 if dt.month >= 7 else dt.year
+                fy_l = f"FY{str(fy_yr)[-2:]}"
+                m_l = dt.strftime('%b-%y')
+                amt = abs(float(f.net_amount))
+                fee_map_fy[fy_l] = fee_map_fy.get(fy_l, 0.0) + amt
+                fee_map_m[m_l] = fee_map_m.get(m_l, 0.0) + amt
+        except Exception:
+            pass
+
     # 1. Generate Financial Year Summary
     fy_data = []
-    for fy, group in df_trades.groupby('Financial Year'):
-        longs_cnt = len(group[group['TRADE TYPE'] == 'LONG'])
-        shorts_cnt = len(group[group['TRADE TYPE'] == 'SHORT'])
+    fy_groups = df_trades.groupby('Financial Year') if not df_trades.empty else []
+    all_fys = set(list(div_map_fy.keys()) + list(fee_map_fy.keys()))
+    if not df_trades.empty: all_fys.update(df_trades['Financial Year'].unique())
+    
+    for fy in sorted(list(all_fys)):
+        group = df_trades[df_trades['Financial Year'] == fy] if not df_trades.empty else pd.DataFrame()
+        longs_cnt = len(group[group['TRADE TYPE'] == 'LONG']) if not group.empty else 0
+        shorts_cnt = len(group[group['TRADE TYPE'] == 'SHORT']) if not group.empty else 0
         tot_cnt = longs_cnt + shorts_cnt
-        entry_tot = group['Entry ($)'].sum()
-        exit_tot = group['Exit ($)'].sum()
-        pnl_tot = group['Profit/loss ($) (incl Commision)'].sum()
+        entry_tot = group['Entry ($)'].sum() if not group.empty else 0.0
+        exit_tot = group['Exit ($)'].sum() if not group.empty else 0.0
+        pnl_tot = group['Profit/loss ($) (incl Commision)'].sum() if not group.empty else 0.0
+        
+        div_tot = div_map_fy.get(fy, 0.0)
+        fee_tot = fee_map_fy.get(fy, 0.0)
+        net_pnl = pnl_tot + div_tot - fee_tot
         
         fy_data.append({
             'Financial Year': fy,
             'Long Trades': int(longs_cnt),
             'Short Trades': int(shorts_cnt),
             'Total Trades': int(tot_cnt),
+            'Dividends': round(div_tot, 2),
+            'Fees': round(fee_tot, 2),
             'Entry': round(entry_tot, 2),
             'Exit': round(exit_tot, 2),
-            'Profit/Loss': round(pnl_tot, 2)
+            'Profit/Loss': round(net_pnl, 2)
         })
-    df_fy = pd.DataFrame(fy_data).sort_values('Financial Year')
+    df_fy = pd.DataFrame(fy_data)
     
     if not df_fy.empty:
         fy_totals = {
@@ -1564,6 +1604,8 @@ def generate_accounting_ledger(orders, asset_index_map):
             'Long Trades': df_fy['Long Trades'].sum(),
             'Short Trades': df_fy['Short Trades'].sum(),
             'Total Trades': df_fy['Total Trades'].sum(),
+            'Dividends': round(df_fy['Dividends'].sum(), 2),
+            'Fees': round(df_fy['Fees'].sum(), 2),
             'Entry': round(df_fy['Entry'].sum(), 2),
             'Exit': round(df_fy['Exit'].sum(), 2),
             'Profit/Loss': round(df_fy['Profit/Loss'].sum(), 2)
@@ -1571,57 +1613,74 @@ def generate_accounting_ledger(orders, asset_index_map):
         df_fy = pd.concat([df_fy, pd.DataFrame([fy_totals])], ignore_index=True)
 
     # 2. Generate Monthly Summary
-    df_trades['Month'] = df_trades['_raw_exit_dt'].dt.strftime('%b-%y')
+    if not df_trades.empty:
+        df_trades['Month'] = df_trades['_raw_exit_dt'].dt.strftime('%b-%y')
+        all_months = set(df_trades['Month'].unique().tolist() + list(div_map_m.keys()) + list(fee_map_m.keys()))
+    else:
+        all_months = set(list(div_map_m.keys()) + list(fee_map_m.keys()))
+        
     monthly_data = []
-    
-    for month, group in df_trades.groupby(df_trades['_raw_exit_dt'].dt.to_period('M')):
-        longs_cnt = len(group[group['TRADE TYPE'] == 'LONG'])
-        shorts_cnt = len(group[group['TRADE TYPE'] == 'SHORT'])
+    for m_str in sorted(list(all_months), key=lambda x: pd.to_datetime(x, format='%b-%y')):
+        group = df_trades[df_trades['Month'] == m_str] if not df_trades.empty else pd.DataFrame()
+        longs_cnt = len(group[group['TRADE TYPE'] == 'LONG']) if not group.empty else 0
+        shorts_cnt = len(group[group['TRADE TYPE'] == 'SHORT']) if not group.empty else 0
         tot_cnt = longs_cnt + shorts_cnt
-        entry_tot = group['Entry ($)'].sum()
-        exit_tot = group['Exit ($)'].sum()
-        pnl_tot = group['Profit/loss ($) (incl Commision)'].sum()
+        entry_tot = group['Entry ($)'].sum() if not group.empty else 0.0
+        exit_tot = group['Exit ($)'].sum() if not group.empty else 0.0
+        pnl_tot = group['Profit/loss ($) (incl Commision)'].sum() if not group.empty else 0.0
+        
+        div_tot = div_map_m.get(m_str, 0.0)
+        fee_tot = fee_map_m.get(m_str, 0.0)
+        net_pnl = pnl_tot + div_tot - fee_tot
         
         monthly_data.append({
-            'Month': month.strftime('%b-%y'),
+            'Month': m_str,
             'Long Trades': int(longs_cnt),
             'Short Trades': int(shorts_cnt),
             'Total Trades': int(tot_cnt),
+            'Dividends': round(div_tot, 2),
+            'Fees': round(fee_tot, 2),
             'Entry': round(entry_tot, 2),
             'Exit': round(exit_tot, 2),
-            'Profit/Loss': round(pnl_tot, 2),
-            '_raw_period': month
+            'Profit/Loss': round(net_pnl, 2),
+            '_raw_period': pd.to_datetime(m_str, format='%b-%y')
         })
     
-    df_monthly = pd.DataFrame(monthly_data).sort_values('_raw_period').drop(columns=['_raw_period'])
+    df_monthly = pd.DataFrame(monthly_data).sort_values('_raw_period').drop(columns=['_raw_period']) if monthly_data else pd.DataFrame()
     
-    avg_row = {
-        'Month': 'Avg',
-        'Long Trades': round(df_monthly['Long Trades'].mean(), 1),
-        'Short Trades': round(df_monthly['Short Trades'].mean(), 1),
-        'Total Trades': round(df_monthly['Total Trades'].mean(), 1),
-        'Entry': round(df_monthly['Entry'].mean(), 2),
-        'Exit': round(df_monthly['Exit'].mean(), 2),
-        'Profit/Loss': round(df_monthly['Profit/Loss'].mean(), 2)
-    }
-    
-    totals_row = {
-        'Month': 'Total',
-        'Long Trades': df_monthly['Long Trades'].sum(),
-        'Short Trades': df_monthly['Short Trades'].sum(),
-        'Total Trades': df_monthly['Total Trades'].sum(),
-        'Entry': round(df_monthly['Entry'].sum(), 2),
-        'Exit': round(df_monthly['Exit'].sum(), 2),
-        'Profit/Loss': round(df_monthly['Profit/Loss'].sum(), 2)
-    }
-    
-    df_monthly = pd.concat([df_monthly, pd.DataFrame([totals_row, avg_row])], ignore_index=True)
-    df_trades.drop(columns=['_raw_exit_dt', 'Financial Year'], inplace=True, errors='ignore')
+    if not df_monthly.empty:
+        avg_row = {
+            'Month': 'Avg',
+            'Long Trades': round(df_monthly['Long Trades'].mean(), 1),
+            'Short Trades': round(df_monthly['Short Trades'].mean(), 1),
+            'Total Trades': round(df_monthly['Total Trades'].mean(), 1),
+            'Dividends': round(df_monthly['Dividends'].mean(), 2),
+            'Fees': round(df_monthly['Fees'].mean(), 2),
+            'Entry': round(df_monthly['Entry'].mean(), 2),
+            'Exit': round(df_monthly['Exit'].mean(), 2),
+            'Profit/Loss': round(df_monthly['Profit/Loss'].mean(), 2)
+        }
+        
+        totals_row = {
+            'Month': 'Total',
+            'Long Trades': df_monthly['Long Trades'].sum(),
+            'Short Trades': df_monthly['Short Trades'].sum(),
+            'Total Trades': df_monthly['Total Trades'].sum(),
+            'Dividends': round(df_monthly['Dividends'].sum(), 2),
+            'Fees': round(df_monthly['Fees'].sum(), 2),
+            'Entry': round(df_monthly['Entry'].sum(), 2),
+            'Exit': round(df_monthly['Exit'].sum(), 2),
+            'Profit/Loss': round(df_monthly['Profit/Loss'].sum(), 2)
+        }
+        df_monthly = pd.concat([df_monthly, pd.DataFrame([totals_row, avg_row])], ignore_index=True)
+        
+    if not df_trades.empty:
+        df_trades.drop(columns=['_raw_exit_dt', 'Financial Year', 'Month'], inplace=True, errors='ignore')
     
     return df_trades, df_monthly, df_fy
 
 def build_pdf_report(df_trades, df_monthly, df_fy, positions=None):
-    """Generates the PDF bytes including the FY summary, Monthly summary, Trade ledger, and Open Positions."""
+    """Generates the PDF bytes including Dividends and Fees columns in summary tables."""
     import urllib.parse
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
@@ -1731,6 +1790,7 @@ def build_pdf_report(df_trades, df_monthly, df_fy, positions=None):
                 f"{row['Long Trades']:.0f}" if isinstance(row['Long Trades'], (int, float)) else row['Long Trades'], 
                 f"{row['Short Trades']:.0f}" if isinstance(row['Short Trades'], (int, float)) else row['Short Trades'], 
                 f"{row['Total Trades']:.0f}" if isinstance(row['Total Trades'], (int, float)) else row['Total Trades'], 
+                format_money(row['Dividends']), format_money(row['Fees']),
                 format_money(row['Entry']), format_money(row['Exit']), format_money(row['Profit/Loss'])
             ])
             
@@ -1757,6 +1817,7 @@ def build_pdf_report(df_trades, df_monthly, df_fy, positions=None):
             f"{row['Long Trades']:.0f}" if isinstance(row['Long Trades'], (int, float)) else row['Long Trades'], 
             f"{row['Short Trades']:.0f}" if isinstance(row['Short Trades'], (int, float)) else row['Short Trades'], 
             f"{row['Total Trades']:.0f}" if isinstance(row['Total Trades'], (int, float)) else row['Total Trades'], 
+            format_money(row['Dividends']), format_money(row['Fees']),
             format_money(row['Entry']), format_money(row['Exit']), format_money(row['Profit/Loss'])
         ])
         
@@ -1778,29 +1839,30 @@ def build_pdf_report(df_trades, df_monthly, df_fy, positions=None):
     # --- TRADE LEDGER TABLE ---
     elements.append(Paragraph("Trade Ledger (Closed / Realized)", styles['Heading2']))
     pdf_trades = df_trades.copy()
-    for col in ['Price ($)', 'Entry ($)', 'Exit Price ($)', 'Exit ($)', 'Profit/loss ($) (incl Commision)']:
-        pdf_trades[col] = pdf_trades[col].apply(lambda x: f"${x:,.2f}")
-    pdf_trades['Actual Gain % (excl Commision)'] = pdf_trades['Actual Gain % (excl Commision)'].apply(lambda x: f"{x:,.2f}%")
-    
-    ledger_data = [pdf_trades.columns.tolist()] + pdf_trades.values.tolist()
-    t_ledger = Table(ledger_data, repeatRows=1)
-    
-    style_commands = [
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#f6b26b")),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.black),
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('FONTSIZE', (0, 0), (-1, -1), 6),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.grey)
-    ]
-    
-    for i, row in enumerate(df_trades['Actual Gain % (excl Commision)'].values):
-        if row > 0:
-            style_commands.append(('TEXTCOLOR', (14, i+1), (14, i+1), colors.green))
-        elif row < 0:
-            style_commands.append(('TEXTCOLOR', (14, i+1), (14, i+1), colors.red))
-            
-    t_ledger.setStyle(TableStyle(style_commands))
-    elements.append(t_ledger)
+    if not pdf_trades.empty:
+        for col in ['Price ($)', 'Entry ($)', 'Exit Price ($)', 'Exit ($)', 'Profit/loss ($) (incl Commision)']:
+            pdf_trades[col] = pdf_trades[col].apply(lambda x: f"${x:,.2f}")
+        pdf_trades['Actual Gain % (excl Commision)'] = pdf_trades['Actual Gain % (excl Commision)'].apply(lambda x: f"{x:,.2f}%")
+        
+        ledger_data = [pdf_trades.columns.tolist()] + pdf_trades.values.tolist()
+        t_ledger = Table(ledger_data, repeatRows=1)
+        
+        style_commands = [
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#f6b26b")),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.black),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTSIZE', (0, 0), (-1, -1), 6),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey)
+        ]
+        
+        for i, row in enumerate(df_trades['Actual Gain % (excl Commision)'].values):
+            if row > 0:
+                style_commands.append(('TEXTCOLOR', (14, i+1), (14, i+1), colors.green))
+            elif row < 0:
+                style_commands.append(('TEXTCOLOR', (14, i+1), (14, i+1), colors.red))
+                
+        t_ledger.setStyle(TableStyle(style_commands))
+        elements.append(t_ledger)
 
     # --- OPEN POSITIONS SCHEDULE (UNREALIZED) ---
     if positions:
@@ -1808,9 +1870,7 @@ def build_pdf_report(df_trades, df_monthly, df_fy, positions=None):
         elements.append(Paragraph("Open Positions Schedule (Unrealized Snapshot)", styles['Heading2']))
         
         open_rows = [["Ticker", "Side", "Quantity", "Avg Entry Price", "Current Price", "Market Value", "Unrealized P/L ($)", "Unrealized P/L (%)"]]
-        tot_market_value = 0.0
-        tot_unrealized_pl = 0.0
-        tot_cost_basis = 0.0
+        tot_market_value, tot_unrealized_pl, tot_cost_basis = 0.0, 0.0, 0.0
         
         for p in positions:
             qty = float(p.get('qty', 0))
@@ -1820,8 +1880,7 @@ def build_pdf_report(df_trades, df_monthly, df_fy, positions=None):
             upl = float(p.get('unrealized_pl', 0))
             uplpc = float(p.get('unrealized_plpc', 0)) * 100
             
-            cost = abs(qty) * entry
-            tot_cost_basis += cost
+            tot_cost_basis += abs(qty) * entry
             tot_market_value += mv
             tot_unrealized_pl += upl
             
@@ -1850,7 +1909,7 @@ def build_pdf_report(df_trades, df_monthly, df_fy, positions=None):
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
             ('FONTSIZE', (0, 0), (-1, -1), 7),
-            ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor("#eef8e5")), # Total row styling
+            ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor("#eef8e5")),
             ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
             ('GRID', (0, 0), (-1, -1), 0.5, colors.grey)
         ]))
@@ -2505,9 +2564,9 @@ with tab3:
         st.markdown("### 📄 Trading Ledgers & Reports")
         if isinstance(orders, list) and len(orders) > 0:
             idx_map = load_global_config().get("asset_index_map", {})
-            df_ledger, df_summary, df_fy = generate_accounting_ledger(orders, idx_map)
+            df_ledger, df_summary, df_fy = generate_accounting_ledger(orders, idx_map, api=api)
             
-            if not df_ledger.empty:
+            if not df_ledger.empty or not df_fy.empty:
                 pdf_data = build_pdf_report(df_ledger, df_summary, df_fy, positions=positions)
                 st.download_button(
                     label="📥 Download Trade PDF Report",
