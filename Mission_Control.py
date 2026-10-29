@@ -1457,10 +1457,10 @@ def format_log_line(line):
 # --- REPORTLAB PDF GENERATION ENGINE ---
 # ==========================================
 def generate_accounting_ledger(orders, asset_index_map):
-    """Reconstructs raw Alpaca fills into the requested accounting DataFrame."""
-    if not orders: return pd.DataFrame(), pd.DataFrame()
+    """Reconstructs raw Alpaca fills into monthly and financial year accounting DataFrames."""
+    if not orders: return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     
-    filled_orders = sorted([o for o in orders if isinstance(o, dict) and o.get('status') == 'filled'], key=lambda x: x.get('filled_at', ''))
+    filled_orders = sorted([o for o in orders if isinstance(o, dict) and o.get('status'] == 'filled'), key=lambda x: x.get('filled_at', ''))
     
     trades = []
     inventory = {}
@@ -1507,6 +1507,10 @@ def generate_accounting_ledger(orders, asset_index_map):
                     index_mapped = asset_index_map.get(sym, 'NYSE')
                     if "Tech/" in index_mapped: index_mapped = "XLK"
                         
+                    # Australian Financial Year calculation (Jul 1 - Jun 30)
+                    fy_year = t.year + 1 if t.month >= 7 else t.year
+                    fy_label = f"FY{str(fy_year)[-2:]}"
+
                     trades.append({
                         'Trade #': trade_counter,
                         'Entry date': inv['entry_time'].strftime('%d/%m/%Y'),
@@ -1523,32 +1527,63 @@ def generate_accounting_ledger(orders, asset_index_map):
                         'Exit ($)': round(exit_p * closed_qty, 2),
                         'Profit/loss ($) (incl Commision)': round(pnl_dollars, 2),
                         'Actual Gain % (excl Commision)': round(gain_pct, 2),
-                        '_raw_exit_dt': t # For monthly grouping
+                        'Financial Year': fy_label,
+                        '_raw_exit_dt': t
                     })
                     trade_counter += 1
                 if inv['qty'] == 0:
                     inv['side'] = None
 
-    if not trades: return pd.DataFrame(), pd.DataFrame()
+    if not trades: return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     
     df_trades = pd.DataFrame(trades)
     
-    # Generate Monthly Summary
+    # 1. Generate Financial Year Summary
+    fy_data = []
+    for fy, group in df_trades.groupby('Financial Year'):
+        longs_cnt = len(group[group['TRADE TYPE'] == 'LONG'])
+        shorts_cnt = len(group[group['TRADE TYPE'] == 'SHORT'])
+        entry_tot = group['Entry ($)'].sum()
+        exit_tot = group['Exit ($)'].sum()
+        pnl_tot = group['Profit/loss ($) (incl Commision)'].sum()
+        
+        fy_data.append({
+            'Financial Year': fy,
+            'No. Alpaca Bought': int(longs_cnt),
+            'No. Alpaca Sold': int(shorts_cnt),
+            'Entry': round(entry_tot, 2),
+            'Exit': round(exit_tot, 2),
+            'Profit/Loss': round(pnl_tot, 2)
+        })
+    df_fy = pd.DataFrame(fy_data).sort_values('Financial Year')
+    
+    # Add Total Row for FY Summary
+    if not df_fy.empty:
+        fy_totals = {
+            'Financial Year': 'Total',
+            'No. Alpaca Bought': df_fy['No. Alpaca Bought'].sum(),
+            'No. Alpaca Sold': df_fy['No. Alpaca Sold'].sum(),
+            'Entry': round(df_fy['Entry'].sum(), 2),
+            'Exit': round(df_fy['Exit'].sum(), 2),
+            'Profit/Loss': round(df_fy['Profit/Loss'].sum(), 2)
+        }
+        df_fy = pd.concat([df_fy, pd.DataFrame([fy_totals])], ignore_index=True)
+
+    # 2. Generate Monthly Summary
     df_trades['Month'] = df_trades['_raw_exit_dt'].dt.strftime('%b-%y')
     monthly_data = []
     
     for month, group in df_trades.groupby(df_trades['_raw_exit_dt'].dt.to_period('M')):
-        # Count the number of trades, not the sum of shares:
-        longs = len(group[group['TRADE TYPE'] == 'LONG'])
-        shorts = len(group[group['TRADE TYPE'] == 'SHORT'])
+        longs_cnt = len(group[group['TRADE TYPE'] == 'LONG'])
+        shorts_cnt = len(group[group['TRADE TYPE'] == 'SHORT'])
         entry_tot = group['Entry ($)'].sum()
         exit_tot = group['Exit ($)'].sum()
         pnl_tot = group['Profit/loss ($) (incl Commision)'].sum()
         
         monthly_data.append({
             'Month': month.strftime('%b-%y'),
-            'No. Alpaca Bought': int(longs),
-            'No. Alpaca Sold': int(shorts),
+            'No. Alpaca Bought': int(longs_cnt),
+            'No. Alpaca Sold': int(shorts_cnt),
             'Entry': round(entry_tot, 2),
             'Exit': round(exit_tot, 2),
             'Profit/Loss': round(pnl_tot, 2),
@@ -1557,7 +1592,6 @@ def generate_accounting_ledger(orders, asset_index_map):
     
     df_monthly = pd.DataFrame(monthly_data).sort_values('_raw_period').drop(columns=['_raw_period'])
     
-    # Averages & Totals Row
     avg_row = {
         'Month': 'Avg',
         'No. Alpaca Bought': df_monthly['No. Alpaca Bought'].mean(),
@@ -1577,12 +1611,12 @@ def generate_accounting_ledger(orders, asset_index_map):
     }
     
     df_monthly = pd.concat([df_monthly, pd.DataFrame([totals_row, avg_row])], ignore_index=True)
-    df_trades.drop(columns=['_raw_exit_dt'], inplace=True)
+    df_trades.drop(columns=['_raw_exit_dt', 'Financial Year'], inplace=True, errors='ignore')
     
-    return df_trades, df_monthly
+    return df_trades, df_monthly, df_fy
 
-def build_pdf_report(df_trades, df_monthly):
-    """Generates the PDF bytes utilizing the zero-CPU QuickChart API for images."""
+def build_pdf_report(df_trades, df_monthly, df_fy):
+    """Generates the PDF bytes including the Financial Year summary table on top."""
     import urllib.parse
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
@@ -1590,14 +1624,13 @@ def build_pdf_report(df_trades, df_monthly):
     styles = getSampleStyleSheet()
     
     elements.append(Paragraph("AQI Trade Performance Report", styles['Title']))
-    elements.append(Spacer(1, 12))
+    elements.append(Spacer(1, 10))
     
-    # --- ZERO CPU CHART RENDERING VIA QUICKCHART API ---
+    # Trades Over Time Chart
     if len(df_monthly) > 2:
         plot_df = df_monthly[~df_monthly['Month'].isin(['Total', 'Avg'])].copy()
         plot_df['Total Trades'] = plot_df['No. Alpaca Bought'] + plot_df['No. Alpaca Sold']
         
-        # Calculate Trendline
         x = np.arange(len(plot_df))
         z = np.polyfit(x, plot_df['Total Trades'], 1)
         p = np.poly1d(z)
@@ -1608,25 +1641,8 @@ def build_pdf_report(df_trades, df_monthly):
             "data": {
                 "labels": plot_df['Month'].tolist(),
                 "datasets": [
-                    {
-                        "label": "Total Trades",
-                        "data": plot_df['Total Trades'].tolist(),
-                        "borderColor": "#569cd6",
-                        "fill": False,
-                        "borderWidth": 2,
-                        "pointRadius": 4,
-                        "lineTension": 0
-                    },
-                    {
-                        "label": "Linear (Trend)",
-                        "data": trend_data,
-                        "borderColor": "#ff9800",
-                        "borderDash": [5, 5],
-                        "fill": False,
-                        "borderWidth": 1.5,
-                        "pointRadius": 0,
-                        "lineTension": 0
-                    }
+                    {"label": "Total Trades", "data": plot_df['Total Trades'].tolist(), "borderColor": "#569cd6", "fill": False, "borderWidth": 2, "pointRadius": 4, "lineTension": 0},
+                    {"label": "Linear (Trend)", "data": trend_data, "borderColor": "#ff9800", "borderDash": [5, 5], "fill": False, "borderWidth": 1.5, "pointRadius": 0, "lineTension": 0}
                 ]
             },
             "options": {
@@ -1638,22 +1654,47 @@ def build_pdf_report(df_trades, df_monthly):
         
         try:
             encoded_chart = urllib.parse.quote(json.dumps(chart_config))
-            img_url = f"https://quickchart.io/chart?w=800&h=250&bkg=white&c={encoded_chart}"
+            img_url = f"https://quickchart.io/chart?w=800&h=220&bkg=white&c={encoded_chart}"
             resp = requests.get(img_url, timeout=5)
             if resp.status_code == 200:
                 img_buffer = io.BytesIO(resp.content)
-                elements.append(Image(img_buffer, width=500, height=156))
-                elements.append(Spacer(1, 20))
+                elements.append(Image(img_buffer, width=480, height=132))
+                elements.append(Spacer(1, 15))
         except Exception:
-            pass # Skip chart if API fails to prevent crashing PDF gen
-    # ----------------------------------------------------
+            pass
 
-    # Monthly Summary Table
-    elements.append(Paragraph("Monthly Summary", styles['Heading2']))
     def format_money(val):
         if isinstance(val, (int, float)): return f"${val:,.2f}"
         return val
-        
+
+    # --- FINANCIAL YEAR SUMMARY TABLE ---
+    if not df_fy.empty:
+        elements.append(Paragraph("Financial Year Summary (Australian Tax Basis)", styles['Heading2']))
+        fy_data = [df_fy.columns.tolist()]
+        for _, row in df_fy.iterrows():
+            fy_data.append([
+                row['Financial Year'], 
+                f"{row['No. Alpaca Bought']:.0f}" if isinstance(row['No. Alpaca Bought'], (int, float)) else row['No. Alpaca Bought'], 
+                f"{row['No. Alpaca Sold']:.0f}" if isinstance(row['No. Alpaca Sold'], (int, float)) else row['No. Alpaca Sold'], 
+                format_money(row['Entry']), format_money(row['Exit']), format_money(row['Profit/Loss'])
+            ])
+            
+        t_fy = Table(fy_data)
+        t_fy.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#1b4f72")),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 6),
+            ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor("#eef8e5")),
+            ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey)
+        ]))
+        elements.append(t_fy)
+        elements.append(Spacer(1, 20))
+
+    # --- MONTHLY SUMMARY TABLE ---
+    elements.append(Paragraph("Monthly Summary", styles['Heading2']))
     summary_data = [df_monthly.columns.tolist()]
     for _, row in df_monthly.iterrows():
         summary_data.append([
@@ -1669,18 +1710,17 @@ def build_pdf_report(df_trades, df_monthly):
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
         ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
-        ('BACKGROUND', (0, -2), (-1, -2), colors.HexColor("#eef8e5")), # Total row styling
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 6),
+        ('BACKGROUND', (0, -2), (-1, -2), colors.HexColor("#eef8e5")),
         ('FONTNAME', (0, -2), (-1, -2), 'Helvetica-Bold'),
-        ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor("#f8f9fa")), # Avg row styling
+        ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor("#f8f9fa")),
         ('GRID', (0, 0), (-1, -1), 0.5, colors.grey)
     ]))
     elements.append(t_summary)
-    elements.append(Spacer(1, 30))
+    elements.append(Spacer(1, 20))
     
-    # Trade Ledger Table
+    # --- TRADE LEDGER TABLE ---
     elements.append(Paragraph("Trade Ledger", styles['Heading2']))
-    
     pdf_trades = df_trades.copy()
     for col in ['Price ($)', 'Entry ($)', 'Exit Price ($)', 'Exit ($)', 'Profit/loss ($) (incl Commision)']:
         pdf_trades[col] = pdf_trades[col].apply(lambda x: f"${x:,.2f}")
@@ -1711,7 +1751,6 @@ def build_pdf_report(df_trades, df_monthly):
     buffer.close()
     
     return pdf_bytes
-# ==========================================
 
 # === SIDEBAR CONFIG ===
 with st.sidebar:
@@ -2355,10 +2394,10 @@ with tab3:
         st.markdown("### 📄 Trading Ledgers & Reports")
         if isinstance(orders, list) and len(orders) > 0:
             idx_map = load_global_config().get("asset_index_map", {})
-            df_ledger, df_summary = generate_accounting_ledger(orders, idx_map)
+            df_ledger, df_summary, df_fy = generate_accounting_ledger(orders, idx_map)
             
             if not df_ledger.empty:
-                pdf_data = build_pdf_report(df_ledger, df_summary)
+                pdf_data = build_pdf_report(df_ledger, df_summary, df_fy)
                 st.download_button(
                     label="📥 Download Trade PDF Report",
                     data=pdf_data,
