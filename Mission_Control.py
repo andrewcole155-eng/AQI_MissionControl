@@ -1459,8 +1459,9 @@ def format_log_line(line):
 def generate_accounting_ledger(orders, asset_index_map):
     """Reconstructs raw Alpaca fills into monthly and financial year accounting DataFrames."""
     if not orders: return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-
+    
     filled_orders = sorted([o for o in orders if isinstance(o, dict) and o.get('status') == 'filled'], key=lambda x: x.get('filled_at', ''))
+    
     trades = []
     inventory = {}
     trade_counter = 1
@@ -1506,7 +1507,6 @@ def generate_accounting_ledger(orders, asset_index_map):
                     index_mapped = asset_index_map.get(sym, 'NYSE')
                     if "Tech/" in index_mapped: index_mapped = "XLK"
                         
-                    # Australian Financial Year calculation (Jul 1 - Jun 30)
                     fy_year = t.year + 1 if t.month >= 7 else t.year
                     fy_label = f"FY{str(fy_year)[-2:]}"
 
@@ -1556,7 +1556,6 @@ def generate_accounting_ledger(orders, asset_index_map):
         })
     df_fy = pd.DataFrame(fy_data).sort_values('Financial Year')
     
-    # Add Total Row for FY Summary
     if not df_fy.empty:
         fy_totals = {
             'Financial Year': 'Total',
@@ -1614,15 +1613,15 @@ def generate_accounting_ledger(orders, asset_index_map):
     
     return df_trades, df_monthly, df_fy
 
-def build_pdf_report(df_trades, df_monthly, df_fy):
-    """Generates the PDF bytes including the Financial Year summary table on top."""
+def build_pdf_report(df_trades, df_monthly, df_fy, positions=None):
+    """Generates the PDF bytes including the FY summary, Monthly summary, Trade ledger, and Open Positions."""
     import urllib.parse
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
     elements = []
     styles = getSampleStyleSheet()
     
-    elements.append(Paragraph("AQI Trade Performance Report", styles['Title']))
+    elements.append(Paragraph("AQI Trade Performance & Tax Report", styles['Title']))
     elements.append(Spacer(1, 10))
     
     # Trades Over Time Chart
@@ -1719,7 +1718,7 @@ def build_pdf_report(df_trades, df_monthly, df_fy):
     elements.append(Spacer(1, 20))
     
     # --- TRADE LEDGER TABLE ---
-    elements.append(Paragraph("Trade Ledger", styles['Heading2']))
+    elements.append(Paragraph("Trade Ledger (Closed / Realized)", styles['Heading2']))
     pdf_trades = df_trades.copy()
     for col in ['Price ($)', 'Entry ($)', 'Exit Price ($)', 'Exit ($)', 'Profit/loss ($) (incl Commision)']:
         pdf_trades[col] = pdf_trades[col].apply(lambda x: f"${x:,.2f}")
@@ -1744,12 +1743,41 @@ def build_pdf_report(df_trades, df_monthly, df_fy):
             
     t_ledger.setStyle(TableStyle(style_commands))
     elements.append(t_ledger)
+
+    # --- OPEN POSITIONS SCHEDULE (UNREALIZED) ---
+    if positions:
+        elements.append(Spacer(1, 20))
+        elements.append(Paragraph("Open Positions Schedule (Unrealized Snapshot)", styles['Heading2']))
+        
+        open_rows = [["Ticker", "Side", "Quantity", "Avg Entry Price", "Current Price", "Market Value", "Unrealized P/L ($)", "Unrealized P/L (%)"]]
+        for p in positions:
+            open_rows.append([
+                p.get('symbol'),
+                str(p.get('side')).upper(),
+                float(p.get('qty', 0)),
+                f"${float(p.get('avg_entry_price', 0)):,.2f}",
+                f"${float(p.get('current_price', 0)):,.2f}",
+                f"${float(p.get('market_value', 0)):,.2f}",
+                f"${float(p.get('unrealized_pl', 0)):,.2f}",
+                f"{float(p.get('unrealized_plpc', 0)) * 100:,.2f}%"
+            ])
+            
+        t_open = Table(open_rows, repeatRows=1)
+        t_open.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#569cd6")),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTSIZE', (0, 0), (-1, -1), 7),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey)
+        ]))
+        elements.append(t_open)
     
     doc.build(elements)
     pdf_bytes = buffer.getvalue()
     buffer.close()
     
     return pdf_bytes
+# ==========================================
 
 # === SIDEBAR CONFIG ===
 with st.sidebar:
@@ -2396,7 +2424,7 @@ with tab3:
             df_ledger, df_summary, df_fy = generate_accounting_ledger(orders, idx_map)
             
             if not df_ledger.empty:
-                pdf_data = build_pdf_report(df_ledger, df_summary, df_fy)
+                pdf_data = build_pdf_report(df_ledger, df_summary, df_fy, positions=positions)
                 st.download_button(
                     label="📥 Download Trade PDF Report",
                     data=pdf_data,
