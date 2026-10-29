@@ -1542,14 +1542,16 @@ def generate_accounting_ledger(orders, asset_index_map):
     for fy, group in df_trades.groupby('Financial Year'):
         longs_cnt = len(group[group['TRADE TYPE'] == 'LONG'])
         shorts_cnt = len(group[group['TRADE TYPE'] == 'SHORT'])
+        tot_cnt = longs_cnt + shorts_cnt
         entry_tot = group['Entry ($)'].sum()
         exit_tot = group['Exit ($)'].sum()
         pnl_tot = group['Profit/loss ($) (incl Commision)'].sum()
         
         fy_data.append({
             'Financial Year': fy,
-            'No. Alpaca Bought': int(longs_cnt),
-            'No. Alpaca Sold': int(shorts_cnt),
+            'Long Trades': int(longs_cnt),
+            'Short Trades': int(shorts_cnt),
+            'Total Trades': int(tot_cnt),
             'Entry': round(entry_tot, 2),
             'Exit': round(exit_tot, 2),
             'Profit/Loss': round(pnl_tot, 2)
@@ -1559,8 +1561,9 @@ def generate_accounting_ledger(orders, asset_index_map):
     if not df_fy.empty:
         fy_totals = {
             'Financial Year': 'Total',
-            'No. Alpaca Bought': df_fy['No. Alpaca Bought'].sum(),
-            'No. Alpaca Sold': df_fy['No. Alpaca Sold'].sum(),
+            'Long Trades': df_fy['Long Trades'].sum(),
+            'Short Trades': df_fy['Short Trades'].sum(),
+            'Total Trades': df_fy['Total Trades'].sum(),
             'Entry': round(df_fy['Entry'].sum(), 2),
             'Exit': round(df_fy['Exit'].sum(), 2),
             'Profit/Loss': round(df_fy['Profit/Loss'].sum(), 2)
@@ -1574,14 +1577,16 @@ def generate_accounting_ledger(orders, asset_index_map):
     for month, group in df_trades.groupby(df_trades['_raw_exit_dt'].dt.to_period('M')):
         longs_cnt = len(group[group['TRADE TYPE'] == 'LONG'])
         shorts_cnt = len(group[group['TRADE TYPE'] == 'SHORT'])
+        tot_cnt = longs_cnt + shorts_cnt
         entry_tot = group['Entry ($)'].sum()
         exit_tot = group['Exit ($)'].sum()
         pnl_tot = group['Profit/loss ($) (incl Commision)'].sum()
         
         monthly_data.append({
             'Month': month.strftime('%b-%y'),
-            'No. Alpaca Bought': int(longs_cnt),
-            'No. Alpaca Sold': int(shorts_cnt),
+            'Long Trades': int(longs_cnt),
+            'Short Trades': int(shorts_cnt),
+            'Total Trades': int(tot_cnt),
             'Entry': round(entry_tot, 2),
             'Exit': round(exit_tot, 2),
             'Profit/Loss': round(pnl_tot, 2),
@@ -1592,8 +1597,9 @@ def generate_accounting_ledger(orders, asset_index_map):
     
     avg_row = {
         'Month': 'Avg',
-        'No. Alpaca Bought': df_monthly['No. Alpaca Bought'].mean(),
-        'No. Alpaca Sold': df_monthly['No. Alpaca Sold'].mean(),
+        'Long Trades': round(df_monthly['Long Trades'].mean(), 1),
+        'Short Trades': round(df_monthly['Short Trades'].mean(), 1),
+        'Total Trades': round(df_monthly['Total Trades'].mean(), 1),
         'Entry': round(df_monthly['Entry'].mean(), 2),
         'Exit': round(df_monthly['Exit'].mean(), 2),
         'Profit/Loss': round(df_monthly['Profit/Loss'].mean(), 2)
@@ -1601,8 +1607,9 @@ def generate_accounting_ledger(orders, asset_index_map):
     
     totals_row = {
         'Month': 'Total',
-        'No. Alpaca Bought': df_monthly['No. Alpaca Bought'].sum(),
-        'No. Alpaca Sold': df_monthly['No. Alpaca Sold'].sum(),
+        'Long Trades': df_monthly['Long Trades'].sum(),
+        'Short Trades': df_monthly['Short Trades'].sum(),
+        'Total Trades': df_monthly['Total Trades'].sum(),
         'Entry': round(df_monthly['Entry'].sum(), 2),
         'Exit': round(df_monthly['Exit'].sum(), 2),
         'Profit/Loss': round(df_monthly['Profit/Loss'].sum(), 2)
@@ -1627,7 +1634,6 @@ def build_pdf_report(df_trades, df_monthly, df_fy, positions=None):
     # --- 1. TRADES OVER TIME CHART ---
     if len(df_monthly) > 2:
         plot_df = df_monthly[~df_monthly['Month'].isin(['Total', 'Avg'])].copy()
-        plot_df['Total Trades'] = plot_df['No. Alpaca Bought'] + plot_df['No. Alpaca Sold']
         
         x = np.arange(len(plot_df))
         z = np.polyfit(x, plot_df['Total Trades'], 1)
@@ -1652,16 +1658,16 @@ def build_pdf_report(df_trades, df_monthly, df_fy, positions=None):
         
         try:
             encoded_chart = urllib.parse.quote(json.dumps(chart_config))
-            img_url = f"https://quickchart.io/chart?w=800&h=200&bkg=white&c={encoded_chart}"
+            img_url = f"https://quickchart.io/chart?w=800&h=180&bkg=white&c={encoded_chart}"
             resp = requests.get(img_url, timeout=5)
             if resp.status_code == 200:
                 img_buffer = io.BytesIO(resp.content)
-                elements.append(Image(img_buffer, width=480, height=120))
+                elements.append(Image(img_buffer, width=480, height=108))
                 elements.append(Spacer(1, 10))
         except Exception:
             pass
 
-    # --- 2. MONTHLY PROFIT/LOSS OVER TIME CHART (WITH LINEAR TREND) ---
+    # --- 2. MONTHLY PROFIT/LOSS OVER TIME CHART ---
     if len(df_monthly) > 2:
         pnl_df = df_monthly[~df_monthly['Month'].isin(['Total', 'Avg'])].copy()
         x_pnl = np.arange(len(pnl_df))
@@ -1702,11 +1708,11 @@ def build_pdf_report(df_trades, df_monthly, df_fy, positions=None):
         
         try:
             encoded_chart_pnl = urllib.parse.quote(json.dumps(chart_config_pnl))
-            img_url_pnl = f"https://quickchart.io/chart?w=800&h=200&bkg=white&c={encoded_chart_pnl}"
+            img_url_pnl = f"https://quickchart.io/chart?w=800&h=180&bkg=white&c={encoded_chart_pnl}"
             resp_pnl = requests.get(img_url_pnl, timeout=5)
             if resp_pnl.status_code == 200:
                 img_buffer_pnl = io.BytesIO(resp_pnl.content)
-                elements.append(Image(img_buffer_pnl, width=480, height=120))
+                elements.append(Image(img_buffer_pnl, width=480, height=108))
                 elements.append(Spacer(1, 15))
         except Exception:
             pass
@@ -1722,8 +1728,9 @@ def build_pdf_report(df_trades, df_monthly, df_fy, positions=None):
         for _, row in df_fy.iterrows():
             fy_data.append([
                 row['Financial Year'], 
-                f"{row['No. Alpaca Bought']:.0f}" if isinstance(row['No. Alpaca Bought'], (int, float)) else row['No. Alpaca Bought'], 
-                f"{row['No. Alpaca Sold']:.0f}" if isinstance(row['No. Alpaca Sold'], (int, float)) else row['No. Alpaca Sold'], 
+                f"{row['Long Trades']:.0f}" if isinstance(row['Long Trades'], (int, float)) else row['Long Trades'], 
+                f"{row['Short Trades']:.0f}" if isinstance(row['Short Trades'], (int, float)) else row['Short Trades'], 
+                f"{row['Total Trades']:.0f}" if isinstance(row['Total Trades'], (int, float)) else row['Total Trades'], 
                 format_money(row['Entry']), format_money(row['Exit']), format_money(row['Profit/Loss'])
             ])
             
@@ -1747,8 +1754,9 @@ def build_pdf_report(df_trades, df_monthly, df_fy, positions=None):
     for _, row in df_monthly.iterrows():
         summary_data.append([
             row['Month'], 
-            f"{row['No. Alpaca Bought']:.0f}" if isinstance(row['No. Alpaca Bought'], (int, float)) else row['No. Alpaca Bought'], 
-            f"{row['No. Alpaca Sold']:.0f}" if isinstance(row['No. Alpaca Sold'], (int, float)) else row['No. Alpaca Sold'], 
+            f"{row['Long Trades']:.0f}" if isinstance(row['Long Trades'], (int, float)) else row['Long Trades'], 
+            f"{row['Short Trades']:.0f}" if isinstance(row['Short Trades'], (int, float)) else row['Short Trades'], 
+            f"{row['Total Trades']:.0f}" if isinstance(row['Total Trades'], (int, float)) else row['Total Trades'], 
             format_money(row['Entry']), format_money(row['Exit']), format_money(row['Profit/Loss'])
         ])
         
@@ -1800,17 +1808,41 @@ def build_pdf_report(df_trades, df_monthly, df_fy, positions=None):
         elements.append(Paragraph("Open Positions Schedule (Unrealized Snapshot)", styles['Heading2']))
         
         open_rows = [["Ticker", "Side", "Quantity", "Avg Entry Price", "Current Price", "Market Value", "Unrealized P/L ($)", "Unrealized P/L (%)"]]
+        tot_market_value = 0.0
+        tot_unrealized_pl = 0.0
+        tot_cost_basis = 0.0
+        
         for p in positions:
+            qty = float(p.get('qty', 0))
+            entry = float(p.get('avg_entry_price', 0))
+            curr = float(p.get('current_price', 0))
+            mv = float(p.get('market_value', 0))
+            upl = float(p.get('unrealized_pl', 0))
+            uplpc = float(p.get('unrealized_plpc', 0)) * 100
+            
+            cost = abs(qty) * entry
+            tot_cost_basis += cost
+            tot_market_value += mv
+            tot_unrealized_pl += upl
+            
             open_rows.append([
                 p.get('symbol'),
                 str(p.get('side')).upper(),
-                float(p.get('qty', 0)),
-                f"${float(p.get('avg_entry_price', 0)):,.2f}",
-                f"${float(p.get('current_price', 0)):,.2f}",
-                f"${float(p.get('market_value', 0)):,.2f}",
-                f"${float(p.get('unrealized_pl', 0)):,.2f}",
-                f"{float(p.get('unrealized_plpc', 0)) * 100:,.2f}%"
+                qty,
+                f"${entry:,.2f}",
+                f"${curr:,.2f}",
+                f"${mv:,.2f}",
+                f"${upl:,.2f}",
+                f"{uplpc:,.2f}%"
             ])
+            
+        tot_uplpc = (tot_unrealized_pl / tot_cost_basis * 100) if tot_cost_basis > 0 else 0.0
+        open_rows.append([
+            "Total", "", "", "", "",
+            f"${tot_market_value:,.2f}",
+            f"${tot_unrealized_pl:,.2f}",
+            f"{tot_uplpc:,.2f}%"
+        ])
             
         t_open = Table(open_rows, repeatRows=1)
         t_open.setStyle(TableStyle([
@@ -1818,6 +1850,8 @@ def build_pdf_report(df_trades, df_monthly, df_fy, positions=None):
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
             ('FONTSIZE', (0, 0), (-1, -1), 7),
+            ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor("#eef8e5")), # Total row styling
+            ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
             ('GRID', (0, 0), (-1, -1), 0.5, colors.grey)
         ]))
         elements.append(t_open)
