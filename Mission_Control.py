@@ -261,11 +261,17 @@ def get_account_data(_api):
         print(f"Alpaca Account Fetch Error: {e}")
         return None, [], []
         
-    # 2. Fetch Orders Safely (Decoupled from Account)
+    # 2. Fetch ALL Lifetime Orders Safely (For Complete Tax Ledger)
     try:
         until_dt = None
-        for _ in range(4):  # Fetch up to 2,000 fills
-            params = {'status': 'filled', 'limit': 500, 'direction': 'desc'}
+        # Loop up to 50 times (25,000 trades) to guarantee full lifetime capture
+        for _ in range(50):
+            params = {
+                'status': 'filled', 
+                'limit': 500, 
+                'direction': 'desc',
+                'after': '2023-01-01T00:00:00Z'  # <--- CRITICAL FIX: Bypasses Alpaca's 60-day limit
+            }
             if until_dt:
                 params['until'] = until_dt
                 
