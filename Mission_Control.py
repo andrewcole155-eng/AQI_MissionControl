@@ -1624,7 +1624,7 @@ def build_pdf_report(df_trades, df_monthly, df_fy, positions=None):
     elements.append(Paragraph("AQI Trade Performance & Tax Report", styles['Title']))
     elements.append(Spacer(1, 10))
     
-    # Trades Over Time Chart
+    # --- 1. TRADES OVER TIME CHART ---
     if len(df_monthly) > 2:
         plot_df = df_monthly[~df_monthly['Month'].isin(['Total', 'Avg'])].copy()
         plot_df['Total Trades'] = plot_df['No. Alpaca Bought'] + plot_df['No. Alpaca Sold']
@@ -1652,11 +1652,61 @@ def build_pdf_report(df_trades, df_monthly, df_fy, positions=None):
         
         try:
             encoded_chart = urllib.parse.quote(json.dumps(chart_config))
-            img_url = f"https://quickchart.io/chart?w=800&h=220&bkg=white&c={encoded_chart}"
+            img_url = f"https://quickchart.io/chart?w=800&h=200&bkg=white&c={encoded_chart}"
             resp = requests.get(img_url, timeout=5)
             if resp.status_code == 200:
                 img_buffer = io.BytesIO(resp.content)
-                elements.append(Image(img_buffer, width=480, height=132))
+                elements.append(Image(img_buffer, width=480, height=120))
+                elements.append(Spacer(1, 10))
+        except Exception:
+            pass
+
+    # --- 2. MONTHLY PROFIT/LOSS OVER TIME CHART (WITH LINEAR TREND) ---
+    if len(df_monthly) > 2:
+        pnl_df = df_monthly[~df_monthly['Month'].isin(['Total', 'Avg'])].copy()
+        x_pnl = np.arange(len(pnl_df))
+        z_pnl = np.polyfit(x_pnl, pnl_df['Profit/Loss'], 1)
+        p_pnl = np.poly1d(z_pnl)
+        trend_pnl = p_pnl(x_pnl).tolist()
+        
+        chart_config_pnl = {
+            "type": "bar",
+            "data": {
+                "labels": pnl_df['Month'].tolist(),
+                "datasets": [
+                    {
+                        "label": "Monthly P&L ($)",
+                        "data": pnl_df['Profit/Loss'].tolist(),
+                        "backgroundColor": ["#2ecc71" if val >= 0 else "#e74c3c" for val in pnl_df['Profit/Loss']],
+                        "borderWidth": 1
+                    },
+                    {
+                        "label": "Linear (Trend)",
+                        "data": trend_pnl,
+                        "type": "line",
+                        "borderColor": "#ff9800",
+                        "borderDash": [5, 5],
+                        "fill": False,
+                        "borderWidth": 1.5,
+                        "pointRadius": 0,
+                        "lineTension": 0
+                    }
+                ]
+            },
+            "options": {
+                "title": {"display": True, "text": "Monthly Profit/Loss Over Time ($)", "fontColor": "#333333"},
+                "legend": {"position": "bottom"},
+                "scales": {"yAxes": [{"ticks": {"beginAtZero": True}, "gridLines": {"color": "#e5e5e5"}}], "xAxes": [{"gridLines": {"display": False}}]}
+            }
+        }
+        
+        try:
+            encoded_chart_pnl = urllib.parse.quote(json.dumps(chart_config_pnl))
+            img_url_pnl = f"https://quickchart.io/chart?w=800&h=200&bkg=white&c={encoded_chart_pnl}"
+            resp_pnl = requests.get(img_url_pnl, timeout=5)
+            if resp_pnl.status_code == 200:
+                img_buffer_pnl = io.BytesIO(resp_pnl.content)
+                elements.append(Image(img_buffer_pnl, width=480, height=120))
                 elements.append(Spacer(1, 15))
         except Exception:
             pass
