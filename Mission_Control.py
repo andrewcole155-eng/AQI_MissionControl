@@ -1595,8 +1595,11 @@ def build_pdf_report(df_trades, df_monthly):
         
         ax.set_title("Trades over time")
         ax.grid(True, linestyle='--', alpha=0.5)
-        ax.tick_params(axis='x', rotation=45) # <--- FIXED LINE
-        fig.tight_layout()
+        ax.tick_params(axis='x', rotation=45)
+        
+        # ---> CRITICAL FIX: Bypass the tight_layout() engine bug <---
+        # Manually assign enough bottom margin so the rotated dates don't get cut off.
+        fig.subplots_adjust(bottom=0.25, left=0.05, right=0.95, top=0.90)
         
         # Save to memory buffer
         img_buffer = io.BytesIO()
