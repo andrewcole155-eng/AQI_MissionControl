@@ -26,6 +26,13 @@ import plotly.graph_objects as go
 import textwrap
 import warnings
 
+# --- NEW IMPORTS FOR PDF GENERATION ---
+import io
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import landscape, A4
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
+from reportlab.lib.styles import getSampleStyleSheet
+
 # --- SUPPRESS THIRD-PARTY WARNINGS ---
 warnings.filterwarnings("ignore", category=FutureWarning, module="yfinance")
 warnings.filterwarnings("ignore", message=".*Timestamp.utcnow is deprecated.*")
@@ -1440,6 +1447,265 @@ def format_log_line(line):
     clean_line = clean_line.replace("[Neo4j]", '<span class="log-neo4j">[Neo4j]</span>').replace("✨", '<span class="log-stgnn">✨</span>')
     return f'<div class="log-line">{clean_line}</div>'
 
+# ==========================================
+# --- REPORTLAB PDF GENERATION ENGINE ---
+# ==========================================
+def generate_accounting_ledger(orders, asset_index_map):
+    """Reconstructs raw Alpaca fills into the requested accounting DataFrame."""
+    if not orders: return pd.DataFrame(), pd.DataFrame()
+    
+    filled_orders = sorted([o for o in orders if isinstance(o, dict) and o.get('status') == 'filled'], key=lambda x: x.get('filled_at', ''))
+    
+    trades = []
+    inventory = {}
+    trade_counter = 1
+    
+    for o in filled_orders:
+        sym = o.get('symbol', 'UNKNOWN')
+        side = o.get('side', 'buy')
+        qty = float(o.get('filled_qty', 0))
+        price = float(o.get('filled_avg_price', 0))
+        
+        try: t = pd.to_datetime(o.get('filled_at')).tz_convert('UTC')
+        except Exception: continue
+            
+        if sym not in inventory:
+            inventory[sym] = {'qty': 0.0, 'cost': 0.0, 'entry_time': t, 'side': None}
+        inv = inventory[sym]
+        
+        if inv['qty'] == 0:
+            inv['side'] = side
+            inv['cost'] = price
+            inv['entry_time'] = t
+            inv['qty'] += qty
+        else:
+            if inv['side'] == side:
+                inv['cost'] = ((inv['cost'] * inv['qty']) + (price * qty)) / (inv['qty'] + qty)
+                inv['qty'] += qty
+            else:
+                closed_qty = min(inv['qty'], qty)
+                inv['qty'] -= closed_qty
+                if closed_qty > 0:
+                    entry_p = inv['cost']
+                    exit_p = price
+                    
+                    if inv['side'] == 'buy':
+                        trade_type = 'LONG'
+                        pnl_dollars = (exit_p - entry_p) * closed_qty
+                        gain_pct = ((exit_p - entry_p) / entry_p) * 100.0
+                    else:
+                        trade_type = 'SHORT'
+                        pnl_dollars = (entry_p - exit_p) * closed_qty
+                        gain_pct = ((entry_p - exit_p) / entry_p) * 100.0
+                        
+                    index_mapped = asset_index_map.get(sym, 'NYSE')
+                    if "Tech/" in index_mapped: index_mapped = "XLK"
+                        
+                    trades.append({
+                        'Trade #': trade_counter,
+                        'Entry date': inv['entry_time'].strftime('%d/%m/%Y'),
+                        'TRADE TYPE': trade_type,
+                        'Inde': index_mapped,
+                        'Ticker': sym,
+                        'Platform': 'Alpaca',
+                        'Quantity': closed_qty,
+                        'Price ($)': round(entry_p, 2),
+                        'Entry ($)': round(entry_p * closed_qty, 2),
+                        'Exit date': t.strftime('%d/%m/%Y'),
+                        'Exit Quantity': closed_qty,
+                        'Exit Price ($)': round(exit_p, 2),
+                        'Exit ($)': round(exit_p * closed_qty, 2),
+                        'Profit/loss ($) (incl Commision)': round(pnl_dollars, 2),
+                        'Actual Gain % (excl Commision)': round(gain_pct, 2),
+                        '_raw_exit_dt': t # For monthly grouping
+                    })
+                    trade_counter += 1
+                if inv['qty'] == 0:
+                    inv['side'] = None
+
+    if not trades: return pd.DataFrame(), pd.DataFrame()
+    
+    df_trades = pd.DataFrame(trades)
+    
+    # Generate Monthly Summary
+    df_trades['Month'] = df_trades['_raw_exit_dt'].dt.strftime('%b-%y')
+    monthly_data = []
+    
+    for month, group in df_trades.groupby(df_trades['_raw_exit_dt'].dt.to_period('M')):
+        longs = group[group['TRADE TYPE'] == 'LONG']['Quantity'].sum()
+        shorts = group[group['TRADE TYPE'] == 'SHORT']['Quantity'].sum()
+        entry_tot = group['Entry ($)'].sum()
+        exit_tot = group['Exit ($)'].sum()
+        pnl_tot = group['Profit/loss ($) (incl Commision)'].sum()
+        
+        monthly_data.append({
+            'Month': month.strftime('%b-%y'),
+            'No. Alpaca Bought': int(longs),
+            'No. Alpaca Sold': int(shorts),
+            'Entry': round(entry_tot, 2),
+            'Exit': round(exit_tot, 2),
+            'Profit/Loss': round(pnl_tot, 2),
+            '_raw_period': month
+        })
+    
+    df_monthly = pd.DataFrame(monthly_data).sort_values('_raw_period').drop(columns=['_raw_period'])
+    
+    # Averages & Totals Row
+    avg_row = {
+        'Month': 'Avg',
+        'No. Alpaca Bought': df_monthly['No. Alpaca Bought'].mean(),
+        'No. Alpaca Sold': df_monthly['No. Alpaca Sold'].mean(),
+        'Entry': round(df_monthly['Entry'].mean(), 2),
+        'Exit': round(df_monthly['Exit'].mean(), 2),
+        'Profit/Loss': round(df_monthly['Profit/Loss'].mean(), 2)
+    }
+    
+    totals_row = {
+        'Month': 'Total',
+        'No. Alpaca Bought': df_monthly['No. Alpaca Bought'].sum(),
+        'No. Alpaca Sold': df_monthly['No. Alpaca Sold'].sum(),
+        'Entry': round(df_monthly['Entry'].sum(), 2),
+        'Exit': round(df_monthly['Exit'].sum(), 2),
+        'Profit/Loss': round(df_monthly['Profit/Loss'].sum(), 2)
+    }
+    
+    df_monthly = pd.concat([df_monthly, pd.DataFrame([totals_row, avg_row])], ignore_index=True)
+    df_trades.drop(columns=['_raw_exit_dt'], inplace=True)
+    
+    return df_trades, df_monthly
+
+def build_pdf_report(df_trades, df_monthly):
+    """Generates the PDF bytes utilizing the zero-CPU QuickChart API for images."""
+    import urllib.parse
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
+    elements = []
+    styles = getSampleStyleSheet()
+    
+    elements.append(Paragraph("AQI Trade Performance Report", styles['Title']))
+    elements.append(Spacer(1, 12))
+    
+    # --- ZERO CPU CHART RENDERING VIA QUICKCHART API ---
+    if len(df_monthly) > 2:
+        plot_df = df_monthly[~df_monthly['Month'].isin(['Total', 'Avg'])].copy()
+        plot_df['Total Trades'] = plot_df['No. Alpaca Bought'] + plot_df['No. Alpaca Sold']
+        
+        # Calculate Trendline
+        x = np.arange(len(plot_df))
+        z = np.polyfit(x, plot_df['Total Trades'], 1)
+        p = np.poly1d(z)
+        trend_data = p(x).tolist()
+        
+        chart_config = {
+            "type": "line",
+            "data": {
+                "labels": plot_df['Month'].tolist(),
+                "datasets": [
+                    {
+                        "label": "Total Trades",
+                        "data": plot_df['Total Trades'].tolist(),
+                        "borderColor": "#569cd6",
+                        "fill": False,
+                        "borderWidth": 2,
+                        "pointRadius": 4,
+                        "lineTension": 0
+                    },
+                    {
+                        "label": "Linear (Trend)",
+                        "data": trend_data,
+                        "borderColor": "#ff9800",
+                        "borderDash": [5, 5],
+                        "fill": False,
+                        "borderWidth": 1.5,
+                        "pointRadius": 0,
+                        "lineTension": 0
+                    }
+                ]
+            },
+            "options": {
+                "title": {"display": True, "text": "Trades over time", "fontColor": "#333333"},
+                "legend": {"position": "bottom"},
+                "scales": {"yAxes": [{"ticks": {"beginAtZero": True}, "gridLines": {"color": "#e5e5e5"}}], "xAxes": [{"gridLines": {"display": False}}]}
+            }
+        }
+        
+        try:
+            encoded_chart = urllib.parse.quote(json.dumps(chart_config))
+            img_url = f"https://quickchart.io/chart?w=800&h=250&bkg=white&c={encoded_chart}"
+            resp = requests.get(img_url, timeout=5)
+            if resp.status_code == 200:
+                img_buffer = io.BytesIO(resp.content)
+                elements.append(Image(img_buffer, width=500, height=156))
+                elements.append(Spacer(1, 20))
+        except Exception:
+            pass # Skip chart if API fails to prevent crashing PDF gen
+    # ----------------------------------------------------
+
+    # Monthly Summary Table
+    elements.append(Paragraph("Monthly Summary", styles['Heading2']))
+    def format_money(val):
+        if isinstance(val, (int, float)): return f"${val:,.2f}"
+        return val
+        
+    summary_data = [df_monthly.columns.tolist()]
+    for _, row in df_monthly.iterrows():
+        summary_data.append([
+            row['Month'], 
+            f"{row['No. Alpaca Bought']:.0f}" if isinstance(row['No. Alpaca Bought'], (int, float)) else row['No. Alpaca Bought'], 
+            f"{row['No. Alpaca Sold']:.0f}" if isinstance(row['No. Alpaca Sold'], (int, float)) else row['No. Alpaca Sold'], 
+            format_money(row['Entry']), format_money(row['Exit']), format_money(row['Profit/Loss'])
+        ])
+        
+    t_summary = Table(summary_data)
+    t_summary.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#2c3e50")),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
+        ('BACKGROUND', (0, -2), (-1, -2), colors.HexColor("#eef8e5")), # Total row styling
+        ('FONTNAME', (0, -2), (-1, -2), 'Helvetica-Bold'),
+        ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor("#f8f9fa")), # Avg row styling
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.grey)
+    ]))
+    elements.append(t_summary)
+    elements.append(Spacer(1, 30))
+    
+    # Trade Ledger Table
+    elements.append(Paragraph("Trade Ledger", styles['Heading2']))
+    
+    pdf_trades = df_trades.copy()
+    for col in ['Price ($)', 'Entry ($)', 'Exit Price ($)', 'Exit ($)', 'Profit/loss ($) (incl Commision)']:
+        pdf_trades[col] = pdf_trades[col].apply(lambda x: f"${x:,.2f}")
+    pdf_trades['Actual Gain % (excl Commision)'] = pdf_trades['Actual Gain % (excl Commision)'].apply(lambda x: f"{x:,.2f}%")
+    
+    ledger_data = [pdf_trades.columns.tolist()] + pdf_trades.values.tolist()
+    t_ledger = Table(ledger_data, repeatRows=1)
+    
+    style_commands = [
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#f6b26b")),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.black),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('FONTSIZE', (0, 0), (-1, -1), 6),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.grey)
+    ]
+    
+    for i, row in enumerate(df_trades['Actual Gain % (excl Commision)'].values):
+        if row > 0:
+            style_commands.append(('TEXTCOLOR', (14, i+1), (14, i+1), colors.green))
+        elif row < 0:
+            style_commands.append(('TEXTCOLOR', (14, i+1), (14, i+1), colors.red))
+            
+    t_ledger.setStyle(TableStyle(style_commands))
+    elements.append(t_ledger)
+    
+    doc.build(elements)
+    pdf_bytes = buffer.getvalue()
+    buffer.close()
+    
+    return pdf_bytes
+# ==========================================
+
 # === SIDEBAR CONFIG ===
 with st.sidebar:
     st.header("🦅 AQI Mission Control")
@@ -2077,6 +2343,28 @@ with tab3:
             rec_col2.metric("Cumulative Trading P&L", f"${trading_pnl:+,.2f}", delta_color="normal")
             rec_col3.metric("Data Status", "🟢 RECONCILED", delta="All cash flows mapped", delta_color="off")
         
+        # ---> NEW: PDF GENERATOR EXPORT BUTTON <---
+        st.divider()
+        st.markdown("### 📄 Trading Ledgers & Reports")
+        if isinstance(orders, list) and len(orders) > 0:
+            idx_map = load_global_config().get("asset_index_map", {})
+            df_ledger, df_summary = generate_accounting_ledger(orders, idx_map)
+            
+            if not df_ledger.empty:
+                pdf_data = build_pdf_report(df_ledger, df_summary)
+                st.download_button(
+                    label="📥 Download Trade PDF Report",
+                    data=pdf_data,
+                    file_name=f"AQI_Trade_Ledger_{pd.Timestamp.now().strftime('%Y%m%d')}.pdf",
+                    mime="application/pdf",
+                    type="primary"
+                )
+            else:
+                st.caption("No closed trades available to generate PDF.")
+        else:
+            st.caption("Awaiting order data from Alpaca to generate reports.")
+        # ----------------------------------------------------
+
         st.divider()
 
         # --- 3. INTERACTIVE REGIME / ERA SLICER ---
