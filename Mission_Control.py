@@ -1538,8 +1538,9 @@ def generate_accounting_ledger(orders, asset_index_map):
     monthly_data = []
     
     for month, group in df_trades.groupby(df_trades['_raw_exit_dt'].dt.to_period('M')):
-        longs = group[group['TRADE TYPE'] == 'LONG']['Quantity'].sum()
-        shorts = group[group['TRADE TYPE'] == 'SHORT']['Quantity'].sum()
+        # Count the number of trades, not the sum of shares:
+        longs = len(group[group['TRADE TYPE'] == 'LONG'])
+        shorts = len(group[group['TRADE TYPE'] == 'SHORT'])
         entry_tot = group['Entry ($)'].sum()
         exit_tot = group['Exit ($)'].sum()
         pnl_tot = group['Profit/loss ($) (incl Commision)'].sum()
