@@ -1566,15 +1566,15 @@ def generate_accounting_ledger(orders, asset_index_map, api=None):
                     m_l = dt.strftime('%b-%y')
                     
                     # Identify Dividends
-                    # Separate income from short debits:
-                if act_type == 'DIV' or 'dividend' in desc:
-                    if net_amt >= 0:
-                        div_map_fy[fy_l] = div_map_fy.get(fy_l, 0.0) + net_amt
-                        div_map_m[m_l] = div_map_m.get(m_l, 0.0) + net_amt
-                    else:
-                        # Re-route negative short dividend debits to fees/borrow costs
-                        fee_map_fy[fy_l] = fee_map_fy.get(fy_l, 0.0) + abs(net_amt)
-                        fee_map_m[m_l] = fee_map_m.get(m_l, 0.0) + abs(net_amt)
+                    if act_type == 'DIV' or 'dividend' in desc:
+                        if net_amt >= 0:
+                            # Standard positive cash dividend
+                            div_map_fy[fy_l] = div_map_fy.get(fy_l, 0.0) + net_amt
+                            div_map_m[m_l] = div_map_m.get(m_l, 0.0) + net_amt
+                        else:
+                            # Re-route negative short dividend debits (Payments in Lieu) to fees/borrow costs
+                            fee_map_fy[fy_l] = fee_map_fy.get(fy_l, 0.0) + abs(net_amt)
+                            fee_map_m[m_l] = fee_map_m.get(m_l, 0.0) + abs(net_amt)
                     
                     # Identify Fees (CAT, REG, or anything with 'fee' in the description)
                     elif act_type in ['FEE', 'TRANS'] or 'fee' in desc:
