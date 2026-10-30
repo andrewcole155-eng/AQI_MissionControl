@@ -1535,16 +1535,16 @@ def generate_accounting_ledger(orders, asset_index_map, api=None):
 
     df_trades = pd.DataFrame(trades) if trades else pd.DataFrame()
 
-    # Robust Activities Fetching: Loop with page_size to capture all DIVs and FEEs
+    # FOOLPROOF ACTIVITIES FETCHING: Ignore 'activity_types' filters which fail silently in some SDK versions.
+    # Instead, pull ALL activities with deep pagination and filter them safely in Python.
     div_map_fy, fee_map_fy = {}, {}
     div_map_m, fee_map_m = {}, {}
     
     if api:
         try:
-            until_dt = None
-            # Loop to fetch up to 5,000 fee and dividend events (bypassing the 100-item limit)
+            page_token = None
             for _ in range(50):
-                batch = api.get_activities(activity_types=['DIV', 'FEE'], direction='desc', page_size=100, until=until_dt)
+                batch = api.get_activities(direction='desc', page_size=100, page_token=page_token) if hasattr(api, 'get_activities') else []
                 if not batch: 
                     break
                     
@@ -1562,12 +1562,12 @@ def generate_accounting_ledger(orders, asset_index_map, api=None):
                     fy_l = f"FY{str(fy_yr)[-2:]}"
                     m_l = dt.strftime('%b-%y')
                     
-                    # Allocate to Dividends
+                    # Identify Dividends
                     if act_type == 'DIV' or 'dividend' in desc:
                         div_map_fy[fy_l] = div_map_fy.get(fy_l, 0.0) + net_amt
                         div_map_m[m_l] = div_map_m.get(m_l, 0.0) + net_amt
                     
-                    # Allocate to Fees (CAT, REG, etc.)
+                    # Identify Fees (CAT, REG, or anything with 'fee' in the description)
                     elif act_type in ['FEE', 'TRANS'] or 'fee' in desc:
                         fee_amt = abs(net_amt)  # Convert negative fee to positive display value
                         fee_map_fy[fy_l] = fee_map_fy.get(fy_l, 0.0) + fee_amt
@@ -1576,11 +1576,17 @@ def generate_accounting_ledger(orders, asset_index_map, api=None):
                 if len(batch) < 100:
                     break
                 
-                # Step backward in time for the next page of results
-                until_dt = pd.to_datetime(batch[-1].date).tz_convert('UTC').strftime('%Y-%m-%dT%H:%M:%SZ')
+                # Alpaca V2 pagination relies on page_token for activities
+                if hasattr(batch, 'page_token'):
+                    page_token = batch.page_token
+                else:
+                    break
+                
+                if not page_token:
+                    break
                 
         except Exception as e:
-            print(f"Alpaca Activities Fetch Error: {e}")
+            st.error(f"Alpaca Activities Fetch Error: {e}")
 
     # 1. Generate Financial Year Summary
     fy_data = []
