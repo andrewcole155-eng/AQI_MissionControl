@@ -1535,39 +1535,45 @@ def generate_accounting_ledger(orders, asset_index_map, api=None):
 
     df_trades = pd.DataFrame(trades) if trades else pd.DataFrame()
 
-    # Robust Activities Fetching: Pull all activities and filter in Python
+    # Isolated Activities Fetching: Request only specific types to bypass fill limits
     div_map_fy, fee_map_fy = {}, {}
     div_map_m, fee_map_m = {}, {}
     
     if api:
+        # 1. Isolate and fetch Dividends
         try:
-            activities = api.get_activities()
-            for act in activities:
-                act_type = getattr(act, 'activity_type', getattr(act, 'type', ''))
-                desc = str(getattr(act, 'description', '')).lower()
-                net_amt = float(getattr(act, 'net_amount', getattr(act, 'amount', 0.0)))
-                date_str = getattr(act, 'date', getattr(act, 'transaction_time', ''))
-                
-                if not date_str:
-                    continue
+            # Setting a high limit to ensure we capture the entire lifetime history
+            divs = api.get_activities(activity_types='DIV', direction='desc', limit=10000)
+            if divs:
+                for d in divs:
+                    dt = pd.to_datetime(d.date).tz_convert('UTC')
+                    fy_yr = dt.year + 1 if dt.month >= 7 else dt.year
+                    fy_l = f"FY{str(fy_yr)[-2:]}"
+                    m_l = dt.strftime('%b-%y')
                     
-                dt = pd.to_datetime(date_str).tz_convert('UTC')
-                fy_yr = dt.year + 1 if dt.month >= 7 else dt.year
-                fy_l = f"FY{str(fy_yr)[-2:]}"
-                m_l = dt.strftime('%b-%y')
-                
-                # Check for Dividends
-                if act_type == 'DIV' or 'dividend' in desc:
+                    net_amt = float(getattr(d, 'net_amount', getattr(d, 'amount', 0.0)))
                     div_map_fy[fy_l] = div_map_fy.get(fy_l, 0.0) + net_amt
                     div_map_m[m_l] = div_map_m.get(m_l, 0.0) + net_amt
-                
-                # Check for Fees (CAT, REG, or general FEE activity types)
-                elif act_type in ['FEE', 'TRANS'] or 'fee' in desc or 'cat fee' in desc or 'reg fee' in desc:
-                    fee_amt = abs(net_amt)
+        except Exception as e:
+            print(f"Dividend fetch error: {e}")
+            
+        # 2. Isolate and fetch Fees (CAT, REG, etc.)
+        try:
+            fees = api.get_activities(activity_types='FEE', direction='desc', limit=10000)
+            if fees:
+                for f in fees:
+                    dt = pd.to_datetime(f.date).tz_convert('UTC')
+                    fy_yr = dt.year + 1 if dt.month >= 7 else dt.year
+                    fy_l = f"FY{str(fy_yr)[-2:]}"
+                    m_l = dt.strftime('%b-%y')
+                    
+                    net_amt = float(getattr(f, 'net_amount', getattr(f, 'amount', 0.0)))
+                    fee_amt = abs(net_amt)  # Convert negative fee to positive display value
+                    
                     fee_map_fy[fy_l] = fee_map_fy.get(fy_l, 0.0) + fee_amt
                     fee_map_m[m_l] = fee_map_m.get(m_l, 0.0) + fee_amt
         except Exception as e:
-            print(f"Alpaca Activities Fetch Warning: {e}")
+            print(f"Fee fetch error: {e}")
 
     # 1. Generate Financial Year Summary
     fy_data = []
