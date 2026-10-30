@@ -1557,7 +1557,8 @@ def generate_accounting_ledger(orders, asset_index_map, api=None):
                     if not date_str: 
                         continue
                         
-                    dt = pd.to_datetime(date_str).tz_convert('UTC')
+                    # CRITICAL FIX: Force UTC localization to prevent tz-naive errors
+                    dt = pd.to_datetime(date_str, utc=True)
                     fy_yr = dt.year + 1 if dt.month >= 7 else dt.year
                     fy_l = f"FY{str(fy_yr)[-2:]}"
                     m_l = dt.strftime('%b-%y')
