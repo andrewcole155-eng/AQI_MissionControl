@@ -1535,45 +1535,52 @@ def generate_accounting_ledger(orders, asset_index_map, api=None):
 
     df_trades = pd.DataFrame(trades) if trades else pd.DataFrame()
 
-    # Isolated Activities Fetching: Request only specific types to bypass fill limits
+    # Robust Activities Fetching: Loop with page_size to capture all DIVs and FEEs
     div_map_fy, fee_map_fy = {}, {}
     div_map_m, fee_map_m = {}, {}
     
     if api:
-        # 1. Isolate and fetch Dividends
         try:
-            # Setting a high limit to ensure we capture the entire lifetime history
-            divs = api.get_activities(activity_types='DIV', direction='desc', limit=10000)
-            if divs:
-                for d in divs:
-                    dt = pd.to_datetime(d.date).tz_convert('UTC')
+            until_dt = None
+            # Loop to fetch up to 5,000 fee and dividend events (bypassing the 100-item limit)
+            for _ in range(50):
+                batch = api.get_activities(activity_types=['DIV', 'FEE'], direction='desc', page_size=100, until=until_dt)
+                if not batch: 
+                    break
+                    
+                for act in batch:
+                    act_type = getattr(act, 'activity_type', getattr(act, 'type', ''))
+                    desc = str(getattr(act, 'description', '')).lower()
+                    net_amt = float(getattr(act, 'net_amount', getattr(act, 'amount', 0.0)))
+                    date_str = getattr(act, 'date', getattr(act, 'transaction_time', ''))
+                    
+                    if not date_str: 
+                        continue
+                        
+                    dt = pd.to_datetime(date_str).tz_convert('UTC')
                     fy_yr = dt.year + 1 if dt.month >= 7 else dt.year
                     fy_l = f"FY{str(fy_yr)[-2:]}"
                     m_l = dt.strftime('%b-%y')
                     
-                    net_amt = float(getattr(d, 'net_amount', getattr(d, 'amount', 0.0)))
-                    div_map_fy[fy_l] = div_map_fy.get(fy_l, 0.0) + net_amt
-                    div_map_m[m_l] = div_map_m.get(m_l, 0.0) + net_amt
-        except Exception as e:
-            print(f"Dividend fetch error: {e}")
-            
-        # 2. Isolate and fetch Fees (CAT, REG, etc.)
-        try:
-            fees = api.get_activities(activity_types='FEE', direction='desc', limit=10000)
-            if fees:
-                for f in fees:
-                    dt = pd.to_datetime(f.date).tz_convert('UTC')
-                    fy_yr = dt.year + 1 if dt.month >= 7 else dt.year
-                    fy_l = f"FY{str(fy_yr)[-2:]}"
-                    m_l = dt.strftime('%b-%y')
+                    # Allocate to Dividends
+                    if act_type == 'DIV' or 'dividend' in desc:
+                        div_map_fy[fy_l] = div_map_fy.get(fy_l, 0.0) + net_amt
+                        div_map_m[m_l] = div_map_m.get(m_l, 0.0) + net_amt
                     
-                    net_amt = float(getattr(f, 'net_amount', getattr(f, 'amount', 0.0)))
-                    fee_amt = abs(net_amt)  # Convert negative fee to positive display value
-                    
-                    fee_map_fy[fy_l] = fee_map_fy.get(fy_l, 0.0) + fee_amt
-                    fee_map_m[m_l] = fee_map_m.get(m_l, 0.0) + fee_amt
+                    # Allocate to Fees (CAT, REG, etc.)
+                    elif act_type in ['FEE', 'TRANS'] or 'fee' in desc:
+                        fee_amt = abs(net_amt)  # Convert negative fee to positive display value
+                        fee_map_fy[fy_l] = fee_map_fy.get(fy_l, 0.0) + fee_amt
+                        fee_map_m[m_l] = fee_map_m.get(m_l, 0.0) + fee_amt
+                
+                if len(batch) < 100:
+                    break
+                
+                # Step backward in time for the next page of results
+                until_dt = pd.to_datetime(batch[-1].date).tz_convert('UTC').strftime('%Y-%m-%dT%H:%M:%SZ')
+                
         except Exception as e:
-            print(f"Fee fetch error: {e}")
+            print(f"Alpaca Activities Fetch Error: {e}")
 
     # 1. Generate Financial Year Summary
     fy_data = []
