@@ -1535,16 +1535,19 @@ def generate_accounting_ledger(orders, asset_index_map, api=None):
 
     df_trades = pd.DataFrame(trades) if trades else pd.DataFrame()
 
-    # FOOLPROOF ACTIVITIES FETCHING: Ignore 'activity_types' filters which fail silently in some SDK versions.
-    # Instead, pull ALL activities with deep pagination and filter them safely in Python.
+    # FOOLPROOF ACTIVITIES FETCHING: Uses time-based 'until' pagination to safely walk backwards through all pages
     div_map_fy, fee_map_fy = {}, {}
     div_map_m, fee_map_m = {}, {}
     
     if api:
         try:
-            page_token = None
-            for _ in range(50):
-                batch = api.get_activities(direction='desc', page_size=100, page_token=page_token) if hasattr(api, 'get_activities') else []
+            until_dt = None
+            for _ in range(100): # Allow up to 10,000 activities total
+                kwargs = {'direction': 'desc', 'page_size': 100}
+                if until_dt:
+                    kwargs['until'] = until_dt
+                    
+                batch = api.get_activities(**kwargs) if hasattr(api, 'get_activities') else []
                 if not batch: 
                     break
                     
@@ -1557,7 +1560,6 @@ def generate_accounting_ledger(orders, asset_index_map, api=None):
                     if not date_str: 
                         continue
                         
-                    # CRITICAL FIX: Force UTC localization to prevent tz-naive errors
                     dt = pd.to_datetime(date_str, utc=True)
                     fy_yr = dt.year + 1 if dt.month >= 7 else dt.year
                     fy_l = f"FY{str(fy_yr)[-2:]}"
@@ -1574,16 +1576,15 @@ def generate_accounting_ledger(orders, asset_index_map, api=None):
                         fee_map_fy[fy_l] = fee_map_fy.get(fy_l, 0.0) + fee_amt
                         fee_map_m[m_l] = fee_map_m.get(m_l, 0.0) + fee_amt
                 
+                # If Alpaca returns less than a full page, we've hit the very end of your account history
                 if len(batch) < 100:
                     break
                 
-                # Alpaca V2 pagination relies on page_token for activities
-                if hasattr(batch, 'page_token'):
-                    page_token = batch.page_token
+                # Time-based pagination: Find the date of the very last item in this batch, and search before it next loop
+                last_date_str = getattr(batch[-1], 'date', getattr(batch[-1], 'transaction_time', ''))
+                if last_date_str:
+                    until_dt = pd.to_datetime(last_date_str, utc=True).strftime('%Y-%m-%dT%H:%M:%SZ')
                 else:
-                    break
-                
-                if not page_token:
                     break
                 
         except Exception as e:
