@@ -994,7 +994,7 @@ def create_scorecard_df(metrics_all, hit_rate_all, trades_all, metrics_90d, hit_
         elif "Calmar" in metric_name or "RoMD" in metric_name:
             return "💎 Strong" if val > 2.0 else ("✅ Acceptable" if val > 1.0 else "🔻 Weak")
         elif "Market Beta" in metric_name:
-            return "🎯 Pure Alpha" if abs(val) < 0.30 else ("🟡 Moderate" if abs(val) < 0.70 else "⚠️ Correlated")
+            return "🎯 Pure Alpha" if abs(val) <= 0.10 else ("🟡 Moderate" if abs(val) <= 0.30 else "⚠️ Correlated")
         elif "Expected Shortfall" in metric_name:
             return "✅ Bounded" if abs(val) < 5.0 else "⚠️ High Tail Risk"
         elif "Profit Factor" in metric_name:
@@ -2292,19 +2292,34 @@ with tab1:
     st.divider()
 
     st.markdown("#### 🔋 Capital Deployment Status")
-    active_capital = sum([abs(float(p['market_value'])) for p in positions]) if positions else 0.0
-    cash_capital = equity_val - active_capital 
-    total_capital = active_capital + cash_capital
-    active_pct = (active_capital / total_capital * 100) if total_capital > 0 else 0
-    cash_pct = (cash_capital / total_capital * 100) if total_capital > 0 else 100
-    
-    sc1, sc2, sc3 = st.columns(3)
-    sc1.metric("💼 Active Capital", f"${active_capital:,.2f}", f"{active_pct:.1f}% Deployed", delta_color="off")
-    sc2.metric("💵 Dry Powder", f"${cash_capital:,.2f}", f"{cash_pct:.1f}% Cash", delta_color="off")
-    
-    asset_index_map = load_global_config().get("asset_index_map", {})
-    monitored_tickers = list(asset_index_map.keys()) if asset_index_map else []
-    sc3.metric("🤖 Active Agents", f"{len(positions)} / {len(monitored_tickers) if monitored_tickers else '?'}")
+        
+        # ---> ADVANCED UPGRADE: NET EXPOSURE MONITORING <---
+        long_capital = sum([float(p['market_value']) for p in positions if p['side'] == 'long']) if positions else 0.0
+        short_capital = sum([abs(float(p['market_value'])) for p in positions if p['side'] == 'short']) if positions else 0.0
+        
+        active_capital = long_capital + short_capital
+        cash_capital = equity_val - active_capital 
+        total_capital = active_capital + cash_capital
+        
+        active_pct = (active_capital / total_capital * 100) if total_capital > 0 else 0
+        cash_pct = (cash_capital / total_capital * 100) if total_capital > 0 else 100
+        
+        net_exposure_val = long_capital - short_capital
+        net_exposure_pct = (net_exposure_val / total_capital * 100) if total_capital > 0 else 0.0
+        
+        sc1, sc2, sc3, sc4 = st.columns(4)
+        sc1.metric("💼 Active Capital", f"${active_capital:,.2f}", f"{active_pct:.1f}% Deployed", delta_color="off")
+        sc2.metric("💵 Dry Powder", f"${cash_capital:,.2f}", f"{cash_pct:.1f}% Cash", delta_color="off")
+        
+        # Display the trigger for Action Masking
+        if abs(net_exposure_pct) > 15.0:
+            sc3.metric("⚖️ Net Exposure", f"{net_exposure_pct:+.1f}%", "Action Masking Active", delta_color="inverse")
+        else:
+            sc3.metric("⚖️ Net Exposure", f"{net_exposure_pct:+.1f}%", "Balanced", delta_color="normal")
+            
+        asset_index_map = load_global_config().get("asset_index_map", {})
+        monitored_tickers = list(asset_index_map.keys()) if asset_index_map else []
+        sc4.metric("🤖 Active Agents", f"{len(positions)} / {len(monitored_tickers) if monitored_tickers else '?'}")
 
     if conviction_data:
         long_count = sum(1 for d in conviction_data.values() if d.get("Action") == "LONG")
