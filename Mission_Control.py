@@ -1004,7 +1004,7 @@ def create_scorecard_df(metrics_all, hit_rate_all, trades_all, metrics_90d, hit_
             return "✅ Stable" if val >= 0.50 else "🔻 Low"
         elif "Trade Hit Rate" in metric_name:
             return "🎯 Sniper" if val >= 0.45 else "😐 Std"
-       elif "Track Record" in metric_name:
+        elif "Track Record" in metric_name:
             return "🏛️ Institutional" if val >= 24 else ("✅ Emerging (>1Yr)" if val >= 12 else "🌱 Maturing")
         elif "Time-to-Recovery" in metric_name:
             return "🛡️ Safe" if val < 90 else ("⚠️ Monitor" if val < 180 else "🚨 Protracted")
@@ -3717,7 +3717,7 @@ with tab6:
                 canary_badge = f"<span style='color: #00ff41; font-weight: bold;'>🚀 LIVE PRODUCTION | PSR: {psr_val:.1%}</span>"
 
             # Fallback to static 0.05 / 0.10 only if the backend threshold wasn't saved
-            dynamic_threshold = float(profile.get('MMD Threshold', 0.05))
+            dynamic_threshold = max(float(profile.get('MMD Threshold', 0.35)), 0.35)
             elevated_threshold = dynamic_threshold * 1.5
 
             if mmd_val > elevated_threshold:
