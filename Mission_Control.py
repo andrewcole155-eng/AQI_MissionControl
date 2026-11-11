@@ -3173,20 +3173,7 @@ with tab3:
         st.divider()
         st.subheader("⚖️ Return Distribution & Temporal Heatmaps")
         
-        c_dist1, c_dist2 = st.columns(2)
-        
-        with c_dist1:
-            st.markdown("**📊 Daily Return Distribution (Asymmetry Test)**")
-            st.caption(f"Skewness: {metrics.get('Skewness', 0):.2f} | Kurtosis: {metrics.get('Kurtosis', 0):.2f} | CVaR: {metrics.get('CVaR (95%)', 0):.2f}%")
-            
-            active_returns = hist_df_adj[hist_df_adj['daily_return'] != 0]['daily_return'] * 100
-            if not active_returns.empty:
-                fig_hist = px.histogram(active_returns, nbins=50, color_discrete_sequence=['#569cd6'], marginal="box")
-                fig_hist.add_vline(x=0, line_dash="dash", line_color="white")
-                fig_hist.update_layout(showlegend=False, height=280, margin=dict(l=0, r=0, t=10, b=0), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(color="#cccccc"), xaxis_title="Daily Return (%)", yaxis_title="Frequency")
-                st.plotly_chart(fig_hist, width='stretch')
-
-        # Pre-compute shared seasonality matrices once for both heatmaps
+        # Pre-compute shared seasonality matrices once (with Avg & Median summary columns)
         matrix_wr, matrix_ret = None, None
         if not hist_df_adj.empty:
             heat_df = hist_df_adj.copy()
@@ -3204,48 +3191,89 @@ with tab3:
             days_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
             months_order = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
-            # 1. Win Rate Matrix
+            # 1. Win Rate (%) Matrix + Long-Term Avg & Median Columns
             pivot_wr = heat_df.groupby(['Day', 'Month'])[['is_win', 'is_trade']].sum().reset_index()
             pivot_wr['Win Rate'] = (pivot_wr['is_win'] / pivot_wr['is_trade'] * 100).fillna(0)
             matrix_wr = pivot_wr.pivot(index='Day', columns='Month', values='Win Rate').reindex(index=days_order, columns=months_order)
+            
+            # True pooled day-of-week Win Rate (Avg) and monthly Median Win Rate
+            day_wr_totals = heat_df.groupby('Day')[['is_win', 'is_trade']].sum().reindex(days_order)
+            true_day_wr = (day_wr_totals['is_win'] / day_wr_totals['is_trade'] * 100).fillna(0)
+            med_day_wr = matrix_wr[months_order].median(axis=1)
+            matrix_wr['Avg'] = true_day_wr
+            matrix_wr['Median'] = med_day_wr
 
-            # 2. Average Active Daily Return (%) Matrix
+            # 2. Average Daily Return (%) Matrix + Long-Term Avg & Median Columns
             active_heat_df = heat_df[heat_df['is_trade'] == 1]
-            if not active_heat_df.empty:
-                pivot_ret = active_heat_df.groupby(['Day', 'Month'])['ret_pct'].mean().reset_index()
-                matrix_ret = pivot_ret.pivot(index='Day', columns='Month', values='ret_pct').reindex(index=days_order, columns=months_order)
+            if active_heat_df.empty:
+                active_heat_df = heat_df
+            pivot_ret = active_heat_df.groupby(['Day', 'Month'])['ret_pct'].mean().reset_index()
+            matrix_ret = pivot_ret.pivot(index='Day', columns='Month', values='ret_pct').reindex(index=days_order, columns=months_order)
+            
+            # True pooled day-of-week Mean Return (Avg) and session Median Return
+            day_ret_stats = active_heat_df.groupby('Day')['ret_pct'].agg(Avg='mean', Median='median').reindex(days_order)
+            matrix_ret['Avg'] = day_ret_stats['Avg']
+            matrix_ret['Median'] = day_ret_stats['Median']
+
+        c_dist1, c_dist2 = st.columns(2)
+        
+        with c_dist1:
+            st.markdown("**📊 Daily Return Distribution (Asymmetry Test)**")
+            st.caption(f"Skewness: {metrics.get('Skewness', 0):.2f} | Kurtosis: {metrics.get('Kurtosis', 0):.2f} | CVaR: {metrics.get('CVaR (95%)', 0):.2f}%")
+            
+            active_returns = hist_df_adj[hist_df_adj['daily_return'] != 0]['daily_return'] * 100
+            if not active_returns.empty:
+                fig_hist = px.histogram(active_returns, nbins=50, color_discrete_sequence=['#569cd6'], marginal="box")
+                fig_hist.add_vline(x=0, line_dash="dash", line_color="white")
+                fig_hist.update_layout(showlegend=False, height=280, margin=dict(l=0, r=0, t=10, b=0), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(color="#cccccc"), xaxis_title="Daily Return (%)", yaxis_title="Frequency")
+                st.plotly_chart(fig_hist, width='stretch')
 
         with c_dist2:
             st.markdown("**🗓️ Seasonality Heatmap (Win Rate %)**")
-            st.caption("Darker green indicates high-probability temporal windows.")
+            st.caption("Darker green indicates high-probability temporal windows. Right columns show long-term Day Avg & Median.")
             if matrix_wr is not None:
-                fig_heat = px.imshow(matrix_wr, text_auto=".0f", color_continuous_scale="Greens", aspect="auto", zmin=0, zmax=100)
+                matrix_wr_disp = matrix_wr.round(0)
+                fig_heat = px.imshow(matrix_wr_disp, text_auto=True, color_continuous_scale="Greens", aspect="auto", zmin=0, zmax=100)
+                fig_heat.update_traces(
+                    texttemplate="%{z:.0f}%",
+                    textfont=dict(size=12, family="Arial Black"),
+                    hovertemplate="<b>%{y} (%{x})</b><br>Win Rate: %{z:.0f}%<extra></extra>"
+                )
+                # Vertical divider line separating Dec (index 11) from Avg/Median summary columns (index 12 & 13)
+                fig_heat.add_vline(x=11.5, line_width=2, line_dash="solid", line_color="#ffffff")
                 fig_heat.update_layout(height=280, margin=dict(l=0, r=0, t=10, b=0), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(color="#cccccc"), coloraxis_showscale=False)
                 st.plotly_chart(fig_heat, width='stretch')
 
-        # ---> NEW: SEASONALITY HEATMAP FOR AVERAGE DAILY RETURN (%) <---
+        # ---> SEASONALITY HEATMAP FOR AVERAGE DAILY RETURN (%) WITH AVG & MEDIAN <---
+        st.markdown("**💹 Seasonality Heatmap (Average Daily Return %)**")
+        st.caption("Mean daily return (%) across active trading sessions. Rightmost columns show long-term expected Avg and Median by day of week.")
         if matrix_ret is not None:
-            st.markdown("**💹 Seasonality Heatmap (Average Daily Return %)**")
-            st.caption("Mean daily return (%) across active trading sessions. Green = positive expectancy; Red = negative drag.")
-            
-            # Symmetric bound around 0% so 0.00% always sits at neutral mid-scale
-            max_abs_ret = float(np.nanmax(np.abs(matrix_ret.values))) if not np.isnan(matrix_ret.values).all() else 1.0
-            bound = max(max_abs_ret, 0.5)
+            matrix_ret_disp = matrix_ret.round(2)
+            valid_vals = matrix_ret_disp.values[~np.isnan(matrix_ret_disp.values)]
+            max_abs_ret = float(np.max(np.abs(valid_vals))) if len(valid_vals) > 0 else 1.0
+            bound = max(max_abs_ret, 0.25)
             
             fig_heat_ret = px.imshow(
-                matrix_ret,
-                text_auto="+.2f",
+                matrix_ret_disp,
+                text_auto=True,
                 color_continuous_scale="RdYlGn",
                 aspect="auto",
                 zmin=-bound,
                 zmax=bound
             )
+            fig_heat_ret.update_traces(
+                texttemplate="%{z:.2f}%",
+                textfont=dict(size=13, family="Arial Black"),
+                hovertemplate="<b>%{y} (%{x})</b><br>Return: %{z:.2f}%<extra></extra>"
+            )
+            # Crisp white vertical separator between Dec and Avg/Median summary columns
+            fig_heat_ret.add_vline(x=11.5, line_width=2, line_dash="solid", line_color="#ffffff")
             fig_heat_ret.update_layout(
-                height=280,
+                height=300,
                 margin=dict(l=0, r=0, t=10, b=0),
                 paper_bgcolor='rgba(0,0,0,0)',
                 plot_bgcolor='rgba(0,0,0,0)',
-                font=dict(color="#cccccc"),
+                font=dict(color="#cccccc", size=12),
                 coloraxis_showscale=False
             )
             st.plotly_chart(fig_heat_ret, width='stretch')
