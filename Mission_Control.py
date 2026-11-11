@@ -3171,7 +3171,7 @@ with tab3:
         else: st.caption("Not enough data yet for 30-Day Rolling metrics.")
 
         st.divider()
-        st.subheader("⚖️ Return Distribution & Temporal Heatmap")
+        st.subheader("⚖️ Return Distribution & Temporal Heatmaps")
         
         c_dist1, c_dist2 = st.columns(2)
         
@@ -3186,31 +3186,69 @@ with tab3:
                 fig_hist.update_layout(showlegend=False, height=280, margin=dict(l=0, r=0, t=10, b=0), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(color="#cccccc"), xaxis_title="Daily Return (%)", yaxis_title="Frequency")
                 st.plotly_chart(fig_hist, width='stretch')
 
+        # Pre-compute shared seasonality matrices once for both heatmaps
+        matrix_wr, matrix_ret = None, None
+        if not hist_df_adj.empty:
+            heat_df = hist_df_adj.copy()
+            heat_df['timestamp'] = heat_df['timestamp'].dt.tz_convert('America/New_York')
+            day_of_week = heat_df['timestamp'].dt.dayofweek
+            heat_df.loc[day_of_week == 5, 'timestamp'] -= pd.Timedelta(days=1) 
+            heat_df.loc[day_of_week == 6, 'timestamp'] += pd.Timedelta(days=1) 
+            
+            heat_df['Day'] = heat_df['timestamp'].dt.day_name()
+            heat_df['Month'] = heat_df['timestamp'].dt.strftime('%b') 
+            heat_df['is_win'] = (heat_df['daily_return'] > 0).astype(int)
+            heat_df['is_trade'] = (heat_df['daily_return'] != 0).astype(int)
+            heat_df['ret_pct'] = heat_df['daily_return'] * 100.0
+            
+            days_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
+            months_order = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+            # 1. Win Rate Matrix
+            pivot_wr = heat_df.groupby(['Day', 'Month'])[['is_win', 'is_trade']].sum().reset_index()
+            pivot_wr['Win Rate'] = (pivot_wr['is_win'] / pivot_wr['is_trade'] * 100).fillna(0)
+            matrix_wr = pivot_wr.pivot(index='Day', columns='Month', values='Win Rate').reindex(index=days_order, columns=months_order)
+
+            # 2. Average Active Daily Return (%) Matrix
+            active_heat_df = heat_df[heat_df['is_trade'] == 1]
+            if not active_heat_df.empty:
+                pivot_ret = active_heat_df.groupby(['Day', 'Month'])['ret_pct'].mean().reset_index()
+                matrix_ret = pivot_ret.pivot(index='Day', columns='Month', values='ret_pct').reindex(index=days_order, columns=months_order)
+
         with c_dist2:
             st.markdown("**🗓️ Seasonality Heatmap (Win Rate %)**")
             st.caption("Darker green indicates high-probability temporal windows.")
-            if not hist_df_adj.empty:
-                heat_df = hist_df_adj.copy()
-                heat_df['timestamp'] = heat_df['timestamp'].dt.tz_convert('America/New_York')
-                day_of_week = heat_df['timestamp'].dt.dayofweek
-                heat_df.loc[day_of_week == 5, 'timestamp'] -= pd.Timedelta(days=1) 
-                heat_df.loc[day_of_week == 6, 'timestamp'] += pd.Timedelta(days=1) 
-                
-                heat_df['Day'] = heat_df['timestamp'].dt.day_name()
-                heat_df['Month'] = heat_df['timestamp'].dt.strftime('%b') 
-                heat_df['is_win'] = (heat_df['daily_return'] > 0).astype(int)
-                heat_df['is_trade'] = (heat_df['daily_return'] != 0).astype(int)
-                
-                pivot = heat_df.groupby(['Day', 'Month'])[['is_win', 'is_trade']].sum().reset_index()
-                pivot['Win Rate'] = (pivot['is_win'] / pivot['is_trade'] * 100).fillna(0)
-                
-                days_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
-                months_order = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-                matrix = pivot.pivot(index='Day', columns='Month', values='Win Rate').reindex(index=days_order, columns=months_order)
-                
-                fig_heat = px.imshow(matrix, text_auto=".0f", color_continuous_scale="Greens", aspect="auto", zmin=0, zmax=100)
+            if matrix_wr is not None:
+                fig_heat = px.imshow(matrix_wr, text_auto=".0f", color_continuous_scale="Greens", aspect="auto", zmin=0, zmax=100)
                 fig_heat.update_layout(height=280, margin=dict(l=0, r=0, t=10, b=0), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(color="#cccccc"), coloraxis_showscale=False)
                 st.plotly_chart(fig_heat, width='stretch')
+
+        # ---> NEW: SEASONALITY HEATMAP FOR AVERAGE DAILY RETURN (%) <---
+        if matrix_ret is not None:
+            st.markdown("**💹 Seasonality Heatmap (Average Daily Return %)**")
+            st.caption("Mean daily return (%) across active trading sessions. Green = positive expectancy; Red = negative drag.")
+            
+            # Symmetric bound around 0% so 0.00% always sits at neutral mid-scale
+            max_abs_ret = float(np.nanmax(np.abs(matrix_ret.values))) if not np.isnan(matrix_ret.values).all() else 1.0
+            bound = max(max_abs_ret, 0.5)
+            
+            fig_heat_ret = px.imshow(
+                matrix_ret,
+                text_auto="+.2f",
+                color_continuous_scale="RdYlGn",
+                aspect="auto",
+                zmin=-bound,
+                zmax=bound
+            )
+            fig_heat_ret.update_layout(
+                height=280,
+                margin=dict(l=0, r=0, t=10, b=0),
+                paper_bgcolor='rgba(0,0,0,0)',
+                plot_bgcolor='rgba(0,0,0,0)',
+                font=dict(color="#cccccc"),
+                coloraxis_showscale=False
+            )
+            st.plotly_chart(fig_heat_ret, width='stretch')
 
         st.divider()
         st.markdown("### ⚖️ Macro Alignment (Rolling Beta & Correlation to SPY)")
