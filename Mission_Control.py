@@ -1111,28 +1111,75 @@ def create_scorecard_df(metrics_all, hit_rate_all, trades_all, metrics_90d, hit_
     ordered_columns = ['METRIC', 'TARGET', 'LIFETIME', 'VERDICT_ALL', '90D', 'VERDICT_90D', '28D', 'VERDICT_28D']
     return df[ordered_columns].reset_index(drop=True)
 
-def calculate_institutional_score(metrics):
-    score = 0
-    trades = metrics.get('Trades Taken', 0)
-    months_active = metrics.get('Track Record (Months)', 0)
-    
-    # Floor bound ensures negative ratios contribute 0 rather than deducting
-    score += max(0, min(30, (metrics.get('Sharpe Ratio', 0) / 2.0) * 30))
-    
-    # Switch to unannualized RoMD instead of MAR if the window is under 1 year
-    efficiency_ratio = metrics.get('RoMD', 0) if months_active < 12 else metrics.get('MAR Ratio', 0)
-    score += max(0, min(25, (efficiency_ratio / 1.0) * 25))
-    
-    score += max(0, min(20, (metrics.get('Sortino Ratio', 0) / 3.0) * 20))
-    
-    # Capital preservation points only awarded if the system is actively risking capital
-    dd = abs(metrics.get('Max Drawdown', 0))
-    if trades > 0:
-        if dd < 0.10: score += 25
-        elif dd < 0.20: score += 15
-        elif dd < 0.30: score += 5
-        
-    return min(100, score)
+def calculate_institutional_score(active_metrics, lifetime_metrics=None, model_health=None):
+    """
+    4-Pillar Institutional Readiness Score (100 pts total):
+      1. Tail Defense & Drawdown Control (25 pts)
+      2. Market Beta Neutrality (25 pts)
+      3. Canary CI/CD & Manifold Stability [PSR + MMD] (25 pts)
+      4. Risk-Adjusted Edge & Expectancy [Blended Era + Lifetime] (25 pts)
+    """
+    if lifetime_metrics is None:
+        lifetime_metrics = active_metrics
+    if model_health is None:
+        model_health = {}
+
+    # --- PILLAR 1: Tail Defense & Capital Preservation (25 pts) ---
+    dd = abs(active_metrics.get('Max Drawdown', lifetime_metrics.get('Max Drawdown', 0.0)))
+    cvar = abs(active_metrics.get('CVaR (95%)', lifetime_metrics.get('CVaR (95%)', 0.0)))
+    if dd <= 0.08: dd_pts = 18.0
+    elif dd <= 0.12: dd_pts = 14.0
+    elif dd <= 0.18: dd_pts = 9.0
+    elif dd <= 0.25: dd_pts = 4.0
+    else: dd_pts = 0.0
+    cvar_pts = 7.0 if cvar < 3.5 else (4.0 if cvar < 5.0 else 1.0)
+    pillar_defense = min(25.0, dd_pts + cvar_pts)
+
+    # --- PILLAR 2: Market Beta Neutrality & Decoupling (25 pts) ---
+    beta_act = abs(active_metrics.get('Market Beta', 0.0))
+    beta_all = abs(lifetime_metrics.get('Market Beta', 0.0))
+    eff_beta = 0.6 * beta_act + 0.4 * beta_all
+    if eff_beta <= 0.10: pillar_beta = 25.0
+    elif eff_beta <= 0.20: pillar_beta = 21.0
+    elif eff_beta <= 0.35: pillar_beta = 15.0
+    elif eff_beta <= 0.60: pillar_beta = 8.0
+    else: pillar_beta = 2.0
+
+    # --- PILLAR 3: CI/CD Canary PSR & Manifold Drift (25 pts) ---
+    psr_vals = [float(m.get("PSR", 0.0)) for m in model_health.values() if float(m.get("PSR", 0.0)) > 0]
+    mmd_vals = [float(m.get("MMD", 0.0)) for m in model_health.values() if "MMD" in m]
+    fleet_thresholds = [max(float(m.get('MMD Threshold', 0.35)), 0.35) for m in model_health.values()]
+    avg_psr = sum(psr_vals) / len(psr_vals) if psr_vals else 0.50
+    avg_mmd = sum(mmd_vals) / len(mmd_vals) if mmd_vals else 0.25
+    mmd_limit = sum(fleet_thresholds) / len(fleet_thresholds) if fleet_thresholds else 0.35
+
+    psr_pts = min(13.0, max(0.0, (avg_psr / 0.60) * 13.0))
+    if avg_mmd <= mmd_limit: mmd_pts = 12.0
+    elif avg_mmd <= mmd_limit * 1.25: mmd_pts = 7.0
+    else: mmd_pts = 2.0
+    pillar_ai = min(25.0, psr_pts + mmd_pts)
+
+    # --- PILLAR 4: Risk-Adjusted Edge & Expectancy (25 pts) ---
+    # Blend 50% selected window + 50% lifetime so a 1-ticker transition doesn't zero out proven edge
+    shp_blend = 0.5 * active_metrics.get('Sharpe Ratio', 0.0) + 0.5 * lifetime_metrics.get('Sharpe Ratio', 0.0)
+    srt_blend = 0.5 * active_metrics.get('Sortino Ratio', 0.0) + 0.5 * lifetime_metrics.get('Sortino Ratio', 0.0)
+    exp_blend = 0.5 * active_metrics.get('Expectancy', 0.0) + 0.5 * lifetime_metrics.get('Expectancy', 0.0)
+    pf_blend = 0.5 * active_metrics.get('Profit Factor', 1.0) + 0.5 * lifetime_metrics.get('Profit Factor', 1.0)
+
+    shp_pts = max(0.0, min(8.0, (shp_blend / 1.5) * 8.0))
+    srt_pts = max(0.0, min(6.0, (srt_blend / 2.0) * 6.0))
+    exp_pts = max(0.0, min(6.0, (exp_blend / 0.004) * 6.0)) if exp_blend > 0 else 0.0
+    pf_pts = max(0.0, min(5.0, ((pf_blend - 0.90) / 0.60) * 5.0))
+    pillar_edge = min(25.0, shp_pts + srt_pts + exp_pts + pf_pts)
+
+    total_score = round(min(100.0, pillar_defense + pillar_beta + pillar_ai + pillar_edge), 1)
+    breakdown = {
+        "🛡️ Tail Defense": round(pillar_defense, 1),
+        "⚖️ Beta Neutrality": round(pillar_beta, 1),
+        "🧬 Canary & Manifold": round(pillar_ai, 1),
+        "📈 Compounding Edge": round(pillar_edge, 1)
+    }
+    return total_score, breakdown
 
 def calculate_future_projections(current_equity, target_cagr, weekly_deposits=[0, 70, 140], inflation_rate=0.03):
     # Anchor the projection strictly to today, using the live equity balance
@@ -2035,7 +2082,7 @@ if account:
             sym = p['symbol']
             mv = abs(float(p['market_value']))
             current_atr = json_signals.get(sym, {}).get("atr_norm", 0.03) if sym in json_signals and isinstance(json_signals[sym], dict) else 0.03
-            total_var += mv * max(current_atr * 1.5, 0.02)
+            total_var += mv * float(np.clip(current_atr * 1.50, 0.025, 0.100))
 
     var_pct = (total_var / equity) * 100 if equity > 0 else 0.0
 
@@ -2437,6 +2484,8 @@ with tab1:
 
         if positions:
             pos_data = []
+            saved_t_states = trading_state.get("trade_states", trading_state) if isinstance(trading_state, dict) else {}
+
             for p in positions:
                 sym = p['symbol']
                 side = p['side'].lower()
@@ -2444,14 +2493,19 @@ with tab1:
                 current = float(p['current_price'])
                 qty = abs(float(p['qty']))
                 
-                current_atr = conviction_data[sym].get("ATR", 0.03) if conviction_data and sym in conviction_data else 0.03
-                active_sl, active_tp = max(current_atr * 1.5, 0.02), max(current_atr * 3.0, 0.04)
+                t_state = saved_t_states.get(sym, {}) if isinstance(saved_t_states, dict) else {}
+                current_atr = float(t_state.get("entry_atr", conviction_data.get(sym, {}).get("ATR", 0.03) if conviction_data else 0.03))
+                current_atr = float(np.clip(current_atr, 0.01, 0.12))
+
+                # Synced with Bot: Bounded Initial SL (2.5% - 10.0%) & Asymmetric TP (Long 2.5x/15%, Short 2.0x/12.5%)
+                base_sl = float(np.clip(current_atr * 1.50, 0.025, 0.100))
+                active_tp = float(np.clip(current_atr * (2.50 if side == 'long' else 2.00), 0.045, 0.150 if side == 'long' else 0.125))
                 
                 if side == 'long':
-                    sl, tp = entry * (1 - active_sl), entry * (1 + active_tp)
+                    sl, tp = entry * (1 - base_sl), entry * (1 + active_tp)
                     progress = max(0.0, min(1.0, (current - sl) / (tp - sl)))
                 else:
-                    sl, tp = entry * (1 + active_sl), entry * (1 - active_tp)
+                    sl, tp = entry * (1 + base_sl), entry * (1 - active_tp)
                     progress = max(0.0, min(1.0, (sl - current) / (sl - tp)))
 
                 days_held = 0
@@ -2464,39 +2518,38 @@ with tab1:
                                 try: 
                                     entry_dt = pd.to_datetime(filled_at).tz_convert('UTC')
                                     current_dt = pd.Timestamp.now(tz='UTC')
-                                    
-                                    # Match backend: Calculate active trading days
                                     calendar = api.get_calendar(start=entry_dt.date().isoformat(), end=current_dt.date().isoformat())
                                     days_held = max(0, len(calendar) - 1)
-                                    
-                                    # Match backend: Handle Monday grace period extension
                                     us_time = current_dt.tz_convert('US/Eastern')
-                                    if us_time.weekday() == 0:  # Monday
+                                    if us_time.weekday() == 0:
                                         max_hold_display = 16
                                 except Exception: pass
                             break
 
                 pos_data.append({
                     "Ticker": sym, "Side": side.upper(), "Invested": entry * qty, "Qty": qty,
-                    "P/L (%)": float(p['unrealized_plpc']) * 100, "Journey": progress, "Days Held": f"{days_held}/{max_hold_display}"
+                    "P/L (%)": float(p['unrealized_plpc']) * 100, "Journey": progress, "Days Held": f"{days_held}/{max_hold_display}",
+                    "_base_sl": base_sl
                 })
             
-            st.dataframe(pd.DataFrame(pos_data), width='stretch', column_config={"Invested": st.column_config.NumberColumn("Invested", format="$%.2f"), "P/L (%)": st.column_config.NumberColumn("P/L (%)", format="%.2f%%"), "Journey": st.column_config.ProgressColumn("Journey to TP", help="Green bar moving right towards Take Profit.", min_value=0.0, max_value=1.0, format="%.2f")}, hide_index=True)
+            df_pos_disp = pd.DataFrame(pos_data).drop(columns=['_base_sl'])
+            st.dataframe(df_pos_disp, width='stretch', column_config={"Invested": st.column_config.NumberColumn("Invested", format="$%.2f"), "P/L (%)": st.column_config.NumberColumn("P/L (%)", format="%.2f%%"), "Journey": st.column_config.ProgressColumn("Journey to TP", help="Green bar moving right towards Take Profit.", min_value=0.0, max_value=1.0, format="%.2f")}, hide_index=True)
 
             st.markdown("##### 🎯 Immediate Flashpoints (True R-Multiple)")
             closest_tp, closest_sl = None, None
             max_r, min_r = -999.0, 999.0
 
             for p_data in pos_data:
-                current_atr = conviction_data[p_data["Ticker"]].get("ATR", 0.03) if conviction_data and p_data["Ticker"] in conviction_data else 0.03
-                true_r = p_data["P/L (%)"] / (max(current_atr * 1.5, 0.02) * 100)
-                
+                true_r = p_data["P/L (%)"] / (p_data["_base_sl"] * 100.0)
                 if true_r > max_r: max_r, closest_tp = true_r, p_data["Ticker"]
                 if true_r < min_r: min_r, closest_sl = true_r, p_data["Ticker"]
 
             f1, f2 = st.columns(2)
-            if closest_tp and max_r > 0: f1.success(f"🟢 **Highest R:** {closest_tp} (Floating: +{max_r:.2f}R)")
-            if closest_sl and min_r < 0: f2.error(f"🔴 **Lowest R:** {closest_sl} (Floating: {min_r:.2f}R)")
+            if closest_tp and max_r > 0:
+                shield_tag = " [🛡️ Ratchet Active]" if max_r >= 0.85 else ""
+                f1.success(f"🟢 **Highest R:** {closest_tp} (Floating: +{max_r:.2f}R){shield_tag}")
+            if closest_sl and min_r < 0:
+                f2.error(f"🔴 **Lowest R:** {closest_sl} (Floating: {min_r:.2f}R)")
                 
         else: st.caption("No active positions currently held.")
 
@@ -2770,19 +2823,18 @@ with tab3:
             offline_state, model_health
         )
 
-        # Base the gauge strictly on 28-Day metrics (fallback to lifetime if 28-day lacks data)
-        active_metrics = metrics_28d if metrics_28d and metrics_28d.get('Total Return') else metrics
-        inst_score = calculate_institutional_score(active_metrics)
+        # Sync gauge to the user's selected Era Slicer (era_metrics) blended with Lifetime (metrics)
+        active_metrics = era_metrics if (era_metrics and era_metrics.get('Trades Taken', 0) > 0) else metrics
+        inst_score, pillar_breakdown = calculate_institutional_score(active_metrics, metrics, model_health)
         
         dd_df = calculate_drawdown(hist_df_adj) 
         day_stats, monthly_stats = calculate_seasonality(hist_df_adj)
         
-        # --- FIX: Route the correct CAGR to the projections engine based on sidebar toggle ---
+        # --- Route the correct CAGR to the projections engine based on sidebar toggle ---
         cagr_all_time = metrics.get("CAGR", 0.0)
         cagr_28d = metrics_28d.get('CAGR', 0.0)
         
-        # --- NEW: Institutional Reality Cap ---
-        # Cap short-term regime projections at 30% to prevent hyper-exponential illusions
+        # --- Institutional Reality Cap ---
         capped_28d_cagr = min(cagr_28d, 0.30) 
         
         if cagr_source == "28-Day Regime (Recent)":
@@ -2801,30 +2853,40 @@ with tab3:
              proj_label = "Lifetime (28D Unavailable)"
              
         inception_dt, starting_principal = hist_df_raw['timestamp'].min(), hist_df_raw['equity'].iloc[0]
-        # Generate forward projections anchored to current equity
         proj_df = calculate_future_projections(current_equity_raw, projection_rate)
 
-        col_gauge, col_scorecard = st.columns([1, 2.5])
+        col_gauge, col_scorecard = st.columns([0.85, 3.15])
         
         with col_gauge:
             fig_gauge = go.Figure(go.Indicator(
                 mode = "gauge+number", value = inst_score, domain = {'x': [0, 1], 'y': [0, 1]},
-                title = {'text': "Strategy Grade (Last 28 Days)", 'font': {'size': 20, 'color': '#e0e0e0'}},
-                number = {'suffix': "/100", 'font': {'color': '#e0e0e0'}},
+                title = {'text': "Institutional Readiness", 'font': {'size': 18, 'color': '#e0e0e0'}},
+                number = {'suffix': "/100", 'font': {'size': 34, 'color': '#e0e0e0'}},
                 gauge = {
-                    'axis': {'range': [None, 100], 'tickwidth': 1, 'tickcolor': "#333"},
-                    'bar': {'color': "#00ff41" if inst_score > 80 else "#ffb000"},
+                    'axis': {'range': [0, 100], 'tickwidth': 1, 'tickcolor': "#333"},
+                    'bar': {'color': "#00ff41" if inst_score >= 75 else ("#569cd6" if inst_score >= 55 else "#ffb000")},
                     'bgcolor': "#1e1e1e", 'borderwidth': 2, 'bordercolor': "#333",
-                    'steps': [{'range': [0, 50], 'color': 'rgba(255, 75, 75, 0.3)'}, {'range': [50, 80], 'color': 'rgba(255, 176, 0, 0.3)'}, {'range': [80, 100], 'color': 'rgba(0, 255, 65, 0.3)'}],
+                    'steps': [
+                        {'range': [0, 50], 'color': 'rgba(255, 75, 75, 0.25)'},
+                        {'range': [50, 75], 'color': 'rgba(86, 156, 214, 0.25)'},
+                        {'range': [75, 100], 'color': 'rgba(0, 255, 65, 0.25)'}
+                    ],
                     'threshold': {'line': {'color': "white", 'width': 4}, 'thickness': 0.75, 'value': inst_score}
                 }
             ))
-            fig_gauge.update_layout(height=280, margin=dict(l=30, r=30, t=50, b=10), paper_bgcolor='rgba(0,0,0,0)', font={'color': "white"})
+            fig_gauge.update_layout(height=230, margin=dict(l=20, r=20, t=45, b=5), paper_bgcolor='rgba(0,0,0,0)', font={'color': "white"})
             st.plotly_chart(fig_gauge, width='stretch')
             
-            if inst_score > 80: st.markdown("<div style='text-align: center; color: #00ff41; font-weight: bold;'>🚀 INSTITUTIONAL GRADE</div>", unsafe_allow_html=True)
-            elif inst_score > 50: st.markdown("<div style='text-align: center; color: #ffb000; font-weight: bold;'>⚡ PROFESSIONAL RETAIL</div>", unsafe_allow_html=True)
-            else: st.markdown("<div style='text-align: center; color: #ff4b4b; font-weight: bold;'>🎲 DEGEN / RETAIL</div>", unsafe_allow_html=True)
+            if inst_score >= 75:
+                st.markdown("<div style='text-align: center; color: #00ff41; font-weight: bold; margin-bottom: 12px;'>🏛️ INSTITUTIONAL GRADE</div>", unsafe_allow_html=True)
+            elif inst_score >= 55:
+                st.markdown("<div style='text-align: center; color: #569cd6; font-weight: bold; margin-bottom: 12px;'>🛡️ STRUCTURAL ALPHA (RECALIBRATING)</div>", unsafe_allow_html=True)
+            else:
+                st.markdown("<div style='text-align: center; color: #ffb000; font-weight: bold; margin-bottom: 12px;'>⚠️ DEFENSIVE RECOVERY</div>", unsafe_allow_html=True)
+
+            # Render the 4 Orthogonal Pillar Sub-Scores
+            for p_name, p_val in pillar_breakdown.items():
+                st.progress(int(min(100, (p_val / 25.0) * 100)), text=f"{p_name}: {p_val:.1f} / 25")
 
         with col_scorecard:
             st.markdown("### 📊 Metrics Breakdown (Adj. for Deposits)")
