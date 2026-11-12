@@ -2196,65 +2196,103 @@ with tab1:
         except Exception as e:
             st.cache_data.clear(); st.warning(f"Macro feed disconnected: {e}"); return None
 
-    @st.cache_data(ttl=14400)
-    def fetch_fleet_earnings_calendar(monitored_tickers):
+    @st.cache_data(ttl=3600)
+    def fetch_fleet_earnings_calendar(monitored_tickers, _model_health=None, _json_signals=None):
         earnings_rows = []
         now_utc = pd.Timestamp.now(tz='UTC')
+        _model_health = _model_health or {}
+        _json_signals = _json_signals or {}
+
         for sym in monitored_tickers:
+            # Check if backend already has this ticker in Earnings Quarantine
+            backend_status = str(_model_health.get(sym, {}).get("Status", ""))
+            backend_readiness = str(_json_signals.get(sym, {}).get("readiness_status", "")) if isinstance(_json_signals.get(sym), dict) else ""
+            is_backend_quarantined = ("EARNINGS" in backend_status.upper()) or (backend_readiness == "SUSPENDED_EARNINGS")
+
+            earn_dt = None
             try:
                 t_obj = yf.Ticker(sym)
                 cal = t_obj.calendar
                 e_dates = None
-                if isinstance(cal, dict) and 'Earnings Date' in cal:
-                    e_dates = cal['Earnings Date']
-                elif hasattr(cal, 'get'):
-                    e_dates = cal.get('Earnings Date')
 
-                if e_dates:
-                    next_earn = e_dates[0] if isinstance(e_dates, list) else e_dates
-                    earn_dt = pd.to_datetime(next_earn, utc=True)
-                    days_until = (earn_dt - now_utc).total_seconds() / (3600.0 * 24.0)
+                if isinstance(cal, dict):
+                    e_dates = cal.get('Earnings Date') or cal.get('Earnings High')
+                elif isinstance(cal, pd.DataFrame) and not cal.empty:
+                    if 'Earnings Date' in cal.index:
+                        e_dates = cal.loc['Earnings Date'].dropna().tolist()
+                    elif 'Earnings Date' in cal.columns:
+                        e_dates = cal['Earnings Date'].dropna().tolist()
 
-                    # 1. Freshly Reported within the last 5 days
-                    if -5.0 <= days_until <= 0.0:
-                        urgency = "🏁 Reported"
-                        countdown_str = f"Passed ({abs(days_until):.1f}d ago)"
-                    # 2. Upcoming Releases
-                    elif days_until > 0.0:
-                        if days_until <= 2.0:
-                            urgency = "🚨 IMMINENT"
-                        elif days_until <= 7.0:
-                            urgency = "🟡 Next Week"
-                        else:
-                            urgency = "🟢 Safe"
-                        countdown_str = f"{days_until:.1f} Days"
+                if e_dates is not None:
+                    if isinstance(e_dates, (list, tuple, np.ndarray, pd.Series)):
+                        next_earn = e_dates[0] if len(e_dates) > 0 else None
                     else:
-                        continue
-
-                    earnings_rows.append({
-                        "Ticker": sym, 
-                        "Countdown": countdown_str,
-                        "raw_days": days_until,
-                        "Status": urgency,
-                        "Earnings Date (UTC)": earn_dt.strftime('%b %d, %Y (%H:%M)')
-                    })
-                else:
-                    # Ticker has no forward date listed in Yahoo yet (post-earnings quiet period)
-                    earnings_rows.append({
-                        "Ticker": sym,
-                        "Countdown": "Post-Earnings (~90d+)",
-                        "raw_days": 999.0,
-                        "Status": "🟢 Safe (Reported)",
-                        "Earnings Date (UTC)": "Q4/FY Date Pending"
-                    })
+                        next_earn = e_dates
+                    if next_earn is not None:
+                        earn_dt = pd.to_datetime(next_earn, utc=True)
             except Exception:
-                continue
+                earn_dt = None
 
-        if earnings_rows:
-            df_earn = pd.DataFrame(earnings_rows)
+            if earn_dt is not None and not pd.isna(earn_dt):
+                days_until = (earn_dt - now_utc).total_seconds() / (3600.0 * 24.0)
+                days_to_quarantine = days_until - 2.0  # Quarantine triggers at T-minus 2.0 days (48h)
+
+                if is_backend_quarantined or (0.0 <= days_until <= 2.0):
+                    urgency = "🚨 QUARANTINED (FORCE CLOSE)"
+                    countdown_str = f"{max(0.0, days_until):.1f}d ({max(0.0, days_until * 24):.0f}h)"
+                    quarantine_timer = "🔒 ENGAGED (Locked)"
+                    sort_key = -10.0 + max(0.0, days_until)
+                elif days_until > 2.0:
+                    if days_to_quarantine <= 2.0:
+                        urgency = "🟠 Lock Imminent (<48h to Shield)"
+                        quarantine_timer = f"⏳ {days_to_quarantine * 24:.0f} Hours ({days_to_quarantine:.1f}d)"
+                    elif days_until <= 7.0:
+                        urgency = "🟡 Next Week"
+                        quarantine_timer = f"⏳ {days_to_quarantine:.1f} Days"
+                    else:
+                        urgency = "🟢 Safe (Clear)"
+                        quarantine_timer = f"{days_to_quarantine:.1f} Days"
+                    countdown_str = f"{days_until:.1f} Days"
+                    sort_key = days_until
+                elif -10.0 <= days_until < 0.0:
+                    urgency = "🏁 Recently Reported"
+                    countdown_str = f"Passed ({abs(days_until):.1f}d ago)"
+                    quarantine_timer = "✅ Cleared (Post-Event)"
+                    sort_key = 500.0 + abs(days_until)
+                else:
+                    urgency = "🟢 Safe (Post-Earnings)"
+                    countdown_str = f"Last: {abs(days_until):.0f}d ago"
+                    quarantine_timer = "✅ Next cycle (~90d)"
+                    sort_key = 900.0
+
+                date_display = earn_dt.strftime('%b %d, %Y')
+            else:
+                if is_backend_quarantined:
+                    urgency = "🚨 QUARANTINED (FORCE CLOSE)"
+                    countdown_str = "Imminent (<48h)"
+                    quarantine_timer = "🔒 ENGAGED (Backend Lock)"
+                    date_display = "Imminent Corporate Action"
+                    sort_key = -15.0
+                else:
+                    urgency = "🟢 Safe (Cycle Complete)"
+                    countdown_str = "Post-Earnings (~90d+)"
+                    quarantine_timer = "✅ > 60 Days"
+                    date_display = "Next Date Pending"
+                    sort_key = 999.0
+
+            earnings_rows.append({
+                "Ticker": sym,
+                "Status": urgency,
+                "Time to Quarantine (T-48h)": quarantine_timer,
+                "Earnings Countdown": countdown_str,
+                "Earnings Date (UTC)": date_display,
+                "raw_days": sort_key
+            })
+
+        df_earn = pd.DataFrame(earnings_rows)
+        if not df_earn.empty:
             df_earn = df_earn.sort_values(by="raw_days", ascending=True).drop(columns=['raw_days'])
-            return df_earn
-        return pd.DataFrame()
+        return df_earn
 
     upcoming_macro = fetch_macro_calendar_dashboard()
     
@@ -2279,24 +2317,32 @@ with tab1:
     else:
         st.success("🟢 **System Posture:** STANDARD TRAIL & TARGETS"); st.info("No critical Tier-1 Macro Events scheduled for USD/JPY for the remainder of the week.")
 
-    # ---> NEW: FLEET EARNINGS COUNTDOWN WIDGET <---
+    # ---> UPDATED: FLEET EARNINGS & QUARANTINE COUNTDOWN WIDGET <---
     asset_index_map = load_global_config().get("asset_index_map", {})
     monitored_tickers = list(asset_index_map.keys()) if asset_index_map else []
     
     if monitored_tickers:
-        df_earnings = fetch_fleet_earnings_calendar(monitored_tickers)
-        if not df_earnings.empty:
-            with st.expander("🏢 Corporate Earnings Shock Radar (12-Ticker Fleet)", expanded=True):
-                st.caption("Auto-liquidations trigger at T-minus 2.0 Days (48 hours) to insulate against discontinuous gap risk.")
-                
-                # Highlight imminent threats in red
-                def highlight_imminent(val):
-                    if "IMMINENT" in str(val): return 'color: #ff4b4b; font-weight: bold;'
-                    elif "Next Week" in str(val): return 'color: #ffb000; font-weight: bold;'
-                    return ''
-                
-                styled_df = df_earnings.style.map(highlight_imminent, subset=['Status'])
-                st.dataframe(styled_df, width='stretch', hide_index=True)
+        df_earnings = fetch_fleet_earnings_calendar(monitored_tickers, model_health, json_signals)
+        with st.expander("🏢 Corporate Earnings Shock Radar & Quarantine Countdown (12-Ticker Fleet)", expanded=True):
+            st.caption("Auto-liquidations & entry locks trigger at T-minus 2.0 Days (48 hours prior to release) to insulate against overnight gap risk.")
+            
+            def highlight_earnings_risk(val):
+                val_str = str(val)
+                if "QUARANTINED" in val_str or "ENGAGED" in val_str:
+                    return 'color: #ff4b4b; font-weight: bold;'
+                elif "Imminent" in val_str or "Hours" in val_str:
+                    return 'color: #ff9800; font-weight: bold;'
+                elif "Next Week" in val_str:
+                    return 'color: #ffb000; font-weight: bold;'
+                elif "Safe" in val_str or "Cleared" in val_str:
+                    return 'color: #00ff41;'
+                return ''
+            
+            styled_df = df_earnings.style.map(
+                highlight_earnings_risk,
+                subset=['Status', 'Time to Quarantine (T-48h)']
+            )
+            st.dataframe(styled_df, width='stretch', hide_index=True)
 
     st.divider()
 
