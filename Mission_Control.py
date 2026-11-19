@@ -2854,6 +2854,8 @@ with tab3:
             df_ex_90d, df_ex_28d_slice = None, None
             hit_rate_90d, trades_90d = 0.0, 0
             hit_rate_28d, trades_28d = 0.0, 0
+            hit_rate_recent = hit_rate_28d
+            trades_recent = trades_28d
 
         metrics_28d = calculate_advanced_metrics(hist_28d, df_ex_28d_slice) if not hist_28d.empty else {}
         metrics_90d = calculate_advanced_metrics(hist_90d, df_ex_90d) if not hist_90d.empty else {}
