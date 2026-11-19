@@ -2843,29 +2843,25 @@ with tab3:
 
         # ---> UPDATED: Distinct 28D, 90D, and 100-Trade Slices <---
         if not df_ex.empty and 'Exit_Time' in df_ex.columns:
-            df_ex_recent = df_ex.sort_values(by='Exit_Time').tail(100).copy()
-            hit_rate_recent = len(df_ex_recent[df_ex_recent['Result'] == 'Win']) / len(df_ex_recent) if len(df_ex_recent) > 0 else 0.0
-            trades_recent = len(df_ex_recent)
-            
             df_ex_90d = df_ex[pd.to_datetime(df_ex['Exit_Time'], utc=True) >= cutoff_90d].copy()
             hit_rate_90d = len(df_ex_90d[df_ex_90d['Result'] == 'Win']) / len(df_ex_90d) if len(df_ex_90d) > 0 else 0.0
             trades_90d = len(df_ex_90d)
 
             df_ex_28d_slice = df_ex[pd.to_datetime(df_ex['Exit_Time'], utc=True) >= cutoff_28d].copy()
+            hit_rate_28d = len(df_ex_28d_slice[df_ex_28d_slice['Result'] == 'Win']) / len(df_ex_28d_slice) if len(df_ex_28d_slice) > 0 else 0.0
+            trades_28d = len(df_ex_28d_slice)
         else:
-            df_ex_recent, df_ex_90d, df_ex_28d_slice = None, None, None
-            hit_rate_recent, trades_recent = 0.0, 0
+            df_ex_90d, df_ex_28d_slice = None, None
             hit_rate_90d, trades_90d = 0.0, 0
+            hit_rate_28d, trades_28d = 0.0, 0
 
-        # Use 28D trade slice if >= 15 trades exist, else use 90D/100-trade slice with 28D daily returns
-        metrics_28d = calculate_advanced_metrics(hist_28d, df_ex_28d_slice if (df_ex_28d_slice is not None and len(df_ex_28d_slice) >= 15) else df_ex_recent) if not hist_28d.empty else {}
+        metrics_28d = calculate_advanced_metrics(hist_28d, df_ex_28d_slice) if not hist_28d.empty else {}
         metrics_90d = calculate_advanced_metrics(hist_90d, df_ex_90d) if not hist_90d.empty else {}
 
-        # ---> FIX: Pass the new 90-day parameters to the scorecard function <---
         scorecard_df = create_scorecard_df(
-            metrics, hit_rate_all, trades_all, 
-            metrics_90d, hit_rate_90d, trades_90d, 
-            metrics_28d, hit_rate_recent, trades_recent, 
+            metrics, hit_rate_all, trades_all,
+            metrics_90d, hit_rate_90d, trades_90d,
+            metrics_28d, hit_rate_28d, trades_28d,
             offline_state, model_health
         )
 
@@ -2923,8 +2919,11 @@ with tab3:
             fig_gauge.update_layout(height=230, margin=dict(l=20, r=20, t=45, b=5), paper_bgcolor='rgba(0,0,0,0)', font={'color': "white"})
             st.plotly_chart(fig_gauge, width='stretch')
             
-            if inst_score >= 75:
+            edge_score = pillar_breakdown.get("📈 Compounding Edge", 0.0)
+            if inst_score >= 75 and edge_score >= 15.0:
                 st.markdown("<div style='text-align: center; color: #00ff41; font-weight: bold; margin-bottom: 12px;'>🏛️ INSTITUTIONAL GRADE</div>", unsafe_allow_html=True)
+            elif inst_score >= 70 and edge_score < 15.0:
+                st.markdown("<div style='text-align: center; color: #569cd6; font-weight: bold; margin-bottom: 12px;'>🛡️ DEFENSIVE GRADE (EDGE BUILDING)</div>", unsafe_allow_html=True)
             elif inst_score >= 55:
                 st.markdown("<div style='text-align: center; color: #569cd6; font-weight: bold; margin-bottom: 12px;'>🛡️ STRUCTURAL ALPHA (RECALIBRATING)</div>", unsafe_allow_html=True)
             else:
