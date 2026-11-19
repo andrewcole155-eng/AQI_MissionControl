@@ -105,48 +105,63 @@ def init_alpaca():
 # --- NEW: TIMESCALEDB FAST TELEMETRY ADAPTER ---
 @st.cache_data(ttl=30)
 def fetch_timescaledb_telemetry():
-    """Fetches execution reality directly from TimescaleDB, bypassing slow Alpaca order loops.
-       PARTITIONED: Only fetches LIVE_TRADING epochs for edge evaluation."""
-    if 'timescaledb' not in st.secrets or not st.secrets["timescaledb"].get("HOST"):
-        return pd.DataFrame()
+    """Fetches execution reality from TimescaleDB, falling back to the Angel_Bot_Logs
+       Execution_Telemetry Google Sheet bridge before reverting to Alpaca."""
+    # 1. Primary: TimescaleDB Direct Query
+    if 'timescaledb' in st.secrets and st.secrets["timescaledb"].get("HOST"):
+        try:
+            import psycopg2
+            db_host = st.secrets["timescaledb"]["HOST"]
+            conn = psycopg2.connect(
+                host=db_host,
+                port=st.secrets["timescaledb"].get("PORT", "5432"),
+                user=st.secrets["timescaledb"].get("USER", "aqi_admin"),
+                password=st.secrets["timescaledb"].get("PASSWORD", "aqi_secure_db_pass_2026"),
+                dbname=st.secrets["timescaledb"].get("DB_NAME", "aqi_telemetry"),
+                connect_timeout=3
+            )
+            query = """
+            SELECT time as "Exit_Time", symbol as "Ticker", side as "Type", 
+                   intended_price as "Intended", actual_price as "Exit_Price", 
+                   pnl_pct * 100 as "PnL (%)", slippage_pct * 100 as "Slippage (%)", exit_reason 
+            FROM execution_telemetry 
+            WHERE state_tensor::text ILIKE '%PRODUCTION%' OR state_tensor IS NOT NULL
+            ORDER BY time ASC
+            """
+            df_ex = pd.read_sql(query, conn)
+            conn.close()
 
+            if not df_ex.empty:
+                df_ex['Result'] = df_ex['PnL (%)'].apply(lambda x: 'Win' if x > 0 else 'Loss')
+                df_ex['Entry_Price'] = df_ex['Exit_Price'] / (1 + (df_ex['PnL (%)'] / 100.0))
+                df_ex['MAE (%)'] = np.minimum(df_ex['PnL (%)'], 0) - abs(df_ex['Slippage (%)'])
+                df_ex['MFE (%)'] = np.maximum(df_ex['PnL (%)'], 0) + abs(df_ex['Slippage (%)'])
+                return df_ex
+        except Exception:
+            pass
+
+    # 2. Secondary: Google Sheets Bridge (Execution_Telemetry tab)
     try:
-        import psycopg2
-        db_host = st.secrets["timescaledb"]["HOST"]
-        
-        conn = psycopg2.connect(
-            host=db_host,
-            port=st.secrets["timescaledb"].get("PORT", "5432"),
-            user=st.secrets["timescaledb"].get("USER", "aqi_admin"),
-            password=st.secrets["timescaledb"].get("PASSWORD", "aqi_secure_db_pass_2026"),
-            dbname=st.secrets["timescaledb"].get("DB_NAME", "aqi_telemetry"),
-            connect_timeout=3
-        )
-        
-        # FIXED: Valid PostgreSQL ILIKE filter (replaces invalid CONTAINS syntax)
-        query = """
-        SELECT time as "Exit_Time", symbol as "Ticker", side as "Type", 
-               intended_price as "Intended", actual_price as "Exit_Price", 
-               pnl_pct * 100 as "PnL (%)", slippage_pct * 100 as "Slippage (%)", exit_reason 
-        FROM execution_telemetry 
-        WHERE state_tensor::text ILIKE '%PRODUCTION%' OR state_tensor IS NOT NULL
-        ORDER BY time ASC
-        """
-        df_ex = pd.read_sql(query, conn)
-        conn.close()
-        
-        if not df_ex.empty:
-            df_ex['Result'] = df_ex['PnL (%)'].apply(lambda x: 'Win' if x > 0 else 'Loss')
-            df_ex['Entry_Price'] = df_ex['Exit_Price'] / (1 + (df_ex['PnL (%)'] / 100.0))
-            df_ex['MAE (%)'] = np.minimum(df_ex['PnL (%)'], 0) - abs(df_ex['Slippage (%)'])
-            df_ex['MFE (%)'] = np.maximum(df_ex['PnL (%)'], 0) + abs(df_ex['Slippage (%)'])
-            
-        return df_ex
-    except ImportError:
-        return pd.DataFrame()
-    except Exception as e:
-        st.warning(f"TimescaleDB Offline (Falling back to Alpaca): {e}")
-        return pd.DataFrame()
+        credentials = st.secrets["gcp_service_account"]
+        gc = gspread.service_account_from_dict(credentials)
+        sh = gc.open("Angel_Bot_Logs")
+        ws = sh.worksheet("Execution_Telemetry")
+        records = ws.get_all_records()
+        if records:
+            df_sh = pd.DataFrame(records)
+            df_sh['Exit_Time'] = pd.to_datetime(df_sh['Exit_Time'], utc=True, errors='coerce')
+            for col in ['Entry_Price', 'Intended', 'Exit_Price', 'PnL (%)', 'Slippage (%)', 'Realized_R', 'MFE_R', 'MAE_R']:
+                if col in df_sh.columns:
+                    df_sh[col] = pd.to_numeric(df_sh[col], errors='coerce').fillna(0.0)
+            df_sh['Result'] = df_sh['PnL (%)'].apply(lambda x: 'Win' if x > 0 else 'Loss')
+            # Convert R-multiples back to approximate % excursions if MFE_R/MAE_R are present
+            df_sh['MAE (%)'] = np.minimum(df_sh['PnL (%)'], 0) - abs(df_sh['Slippage (%)'])
+            df_sh['MFE (%)'] = np.maximum(df_sh['PnL (%)'], 0) + abs(df_sh['Slippage (%)'])
+            return df_sh.dropna(subset=['Exit_Time']).sort_values('Exit_Time')
+    except Exception:
+        pass
+
+    return pd.DataFrame()
 
 @st.cache_data(ttl=60)
 def fetch_timescaledb_canary_history():
@@ -466,12 +481,13 @@ def parse_latest_run_logic(logs, bot_state=None, df_ex=None):
     live_metrics = {}
     if df_ex is not None and not df_ex.empty:
         for t, group in df_ex.groupby('Ticker'):
-            trades = len(group)
-            wins = len(group[group['Result'] == 'Win'])
+            recent_group = group.sort_values('Exit_Time').tail(15) if 'Exit_Time' in group.columns else group.tail(15)
+            trades = len(recent_group)
+            wins = len(recent_group[recent_group['Result'] == 'Win'])
             wr = (wins / trades) * 100.0 if trades > 0 else 0.0
             
-            mean_pnl = group['PnL (%)'].mean()
-            std_pnl = group['PnL (%)'].std()
+            mean_pnl = recent_group['PnL (%)'].mean()
+            std_pnl = recent_group['PnL (%)'].std()
             ir = (mean_pnl / std_pnl) * (50 ** 0.5) if std_pnl > 0 else 0.0
             
             live_metrics[t] = {'Live WR': wr, 'Live IR': ir, 'Trades': trades}
@@ -2966,7 +2982,12 @@ with tab3:
 
             # Fleet Health & Quarantine Diagnostics
             total_fleet = len(model_health) if model_health else 12
-            quarantined_tickers = [t for t, m in model_health.items() if "QUARANTINED" in str(m.get("Status", "")) or "HALTED" in str(m.get("Lifecycle", ""))]
+            # Exclude temporary Earnings Shields from impaired/degraded model counts
+            quarantined_tickers = [
+                t for t, m in model_health.items()
+                if ("QUARANTINED" in str(m.get("Status", "")) or "HALTED" in str(m.get("Lifecycle", "")))
+                and "EARNINGS" not in str(m.get("Status", "")).upper()
+            ]
             degraded_tickers = [t for t, m in model_health.items() if "DEGRADED" in str(m.get("Status", "")) or "ABORTED" in str(m.get("Status", ""))]
             valid_ir_models = [m for m in model_health.values() if 'Live IR' in m and 'Base IR' in m]
             fleet_base_ir = sum(float(m['Base IR']) for m in valid_ir_models) / len(valid_ir_models) if valid_ir_models else 0.0
@@ -3007,7 +3028,7 @@ with tab3:
             dur_all = metrics.get('Max Drawdown Duration', 0)
             dur_90 = metrics_90d.get('Max Drawdown Duration', 0)
             dur_28 = metrics_28d.get('Max Drawdown Duration', 0)
-            curr_underwater = metrics.get('Current Underwater Days', 0)
+            curr_underwater = metrics_90d.get('Current Underwater Days', 0)
             years_active_var = trl_all / 12.0 if trl_all > 0 else 1.0
             turnover_all = trades_all / years_active_var
 
