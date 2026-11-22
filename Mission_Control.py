@@ -2045,12 +2045,23 @@ if not api: st.stop()
 
 account, positions, orders = get_account_data(api)
 
-# --- REPLACE ALPACA EXCURSIONS WITH TIMESCALEDB ---
+# --- MERGE HISTORICAL ALPACA FILLS WITH NEW TIMESCALEDB / SHEET TELEMETRY ---
 df_ex_db = fetch_timescaledb_telemetry()
-if not df_ex_db.empty:
+df_ex_alpaca = get_trade_excursions(api, orders)
+
+if not df_ex_db.empty and not df_ex_alpaca.empty:
+    df_ex_db['Exit_Time'] = pd.to_datetime(df_ex_db['Exit_Time'], utc=True, errors='coerce')
+    df_ex_alpaca['Exit_Time'] = pd.to_datetime(df_ex_alpaca['Exit_Time'], utc=True, errors='coerce')
+
+    # Keep Alpaca history strictly before the telemetry bridge started logging (minus a 5-min buffer to avoid boundary duplicates)
+    db_start_ts = df_ex_db['Exit_Time'].min() - pd.Timedelta(minutes=5)
+    df_hist_only = df_ex_alpaca[df_ex_alpaca['Exit_Time'] < db_start_ts]
+
+    df_ex = pd.concat([df_hist_only, df_ex_db], ignore_index=True).sort_values('Exit_Time').reset_index(drop=True)
+elif not df_ex_db.empty:
     df_ex = df_ex_db
 else:
-    df_ex = get_trade_excursions(api, orders)
+    df_ex = df_ex_alpaca
 
 # === STATE INITIALIZATION FIX ===
 # Prevents NameErrors if Alpaca rate-limits or returns None for 'account'
