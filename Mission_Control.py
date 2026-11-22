@@ -481,16 +481,24 @@ def parse_latest_run_logic(logs, bot_state=None, df_ex=None):
     live_metrics = {}
     if df_ex is not None and not df_ex.empty:
         for t, group in df_ex.groupby('Ticker'):
-            recent_group = group.sort_values('Exit_Time').tail(15) if 'Exit_Time' in group.columns else group.tail(15)
-            trades = len(recent_group)
+            sorted_group = group.sort_values('Exit_Time') if 'Exit_Time' in group.columns else group
+            recent_group = sorted_group.tail(15)
+            
+            total_trades = len(sorted_group)
+            recent_trades = len(recent_group)
             wins = len(recent_group[recent_group['Result'] == 'Win'])
-            wr = (wins / trades) * 100.0 if trades > 0 else 0.0
+            wr = (wins / recent_trades) * 100.0 if recent_trades > 0 else 0.0
             
             mean_pnl = recent_group['PnL (%)'].mean()
             std_pnl = recent_group['PnL (%)'].std()
             ir = (mean_pnl / std_pnl) * (50 ** 0.5) if std_pnl > 0 else 0.0
             
-            live_metrics[t] = {'Live WR': wr, 'Live IR': ir, 'Trades': trades}
+            live_metrics[t] = {
+                'Live WR': wr,
+                'Live IR': ir,
+                'Trades': recent_trades,       # Drives warmup (<5) & decay gates
+                'Total Trades': total_trades   # Drives display visibility
+            }
 
     signals = {}
     watchlist = [] 
@@ -555,6 +563,7 @@ def parse_latest_run_logic(logs, bot_state=None, df_ex=None):
                 
                 live_wr = live_metrics.get(ticker, {}).get('Live WR', 0.0)
                 live_trades = live_metrics.get(ticker, {}).get('Trades', 0)
+                total_trades = live_metrics.get(ticker, {}).get('Total Trades', 0)
 
                 mdd_val = data.get("mdd_days", 0)
                 readiness_status = data.get("readiness_status", "UNKNOWN")
@@ -648,6 +657,7 @@ def parse_latest_run_logic(logs, bot_state=None, df_ex=None):
                     "MDD": mdd_val,
                     "Base MDD": base_mdd,
                     "Trades": live_trades,
+                    "Total Trades": total_trades,
                     "MMD": mmd_drift,
                     "MMD Threshold": float(dynamic_mmd_limit),  # <--- Cleanly extracted
                     "PSR": psr_score,
@@ -4015,6 +4025,7 @@ with tab6:
             live_wr = float(profile.get('Live WR', 0.0))
             base_mdd = int(profile.get('Base MDD', 0))
             live_trades = int(profile.get('Trades', 0))
+            total_trades = int(profile.get('Total Trades', live_trades))
             mmd_val = float(profile.get('MMD', 0.0))
             psr_val = float(profile.get('PSR', 0.0))
             deploy_status = profile.get('Deployment', 'PRODUCTION_DEPLOYED')
@@ -4091,7 +4102,7 @@ with tab6:
                 f"</div>"
                 f"<div style='margin-top: 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; font-size: 0.88em; color: #aaa; background: #252526; padding: 12px; border-radius: 6px;'>"
                 f"<div><strong style='color: #569cd6;'>🏗️ Weekend Training Blueprint</strong><br>Base IR: <strong>{base_ir:.2f}</strong> &nbsp;|&nbsp; Win Rate: {base_wr:.1f}% &nbsp;|&nbsp; MDD Duration: {base_mdd}d</div>"
-                f"<div><strong style='color: #4ec9b0;'>⚡ Live Out-of-Sample Execution ({live_trades} Trades)</strong><br>Live IR: <strong>{live_ir:.2f}</strong> &nbsp;|&nbsp; Win Rate: {live_wr:.1f}% &nbsp;|&nbsp; Edge Decay: <strong>{decay:.2f}</strong></div>"
+                f"<div><strong style='color: #4ec9b0;'>⚡ Live Out-of-Sample Execution (Last {live_trades} of {total_trades} Trades)</strong><br>Live IR: <strong>{live_ir:.2f}</strong> &nbsp;|&nbsp; Win Rate: {live_wr:.1f}% &nbsp;|&nbsp; Edge Decay: <strong>{decay:.2f}</strong></div>"
                 f"</div>"
                 f"<div style='margin-top: 12px; font-size: 0.92em; line-height: 1.5; color: #ccc;'>"
                 f"<div style='margin-bottom: 6px;'>{narrative}</div>"
