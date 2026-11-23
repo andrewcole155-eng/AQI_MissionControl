@@ -1505,18 +1505,45 @@ def generate_tactical_alerts(roll_df, global_metrics, margin_util, phys_df):
 
     return alerts
 
-def transmit_manual_directives(is_halted, manual_sizing_multiplier):
-    payload_str = json.dumps({"global_directives": {"active_regime": "EMERGENCY_HALT" if is_halted else "STABLE", "sizing_multiplier": float(manual_sizing_multiplier)}}, indent=4)
-    if 'last_transmitted_payload' in st.session_state and st.session_state['last_transmitted_payload'] == payload_str: return 
+@st.cache_data(ttl=300)
+def load_saved_overrides():
+    """Reads persisted Emergency Overrides from Google Sheets so refreshes don't wipe them."""
     try:
         credentials = st.secrets["gcp_service_account"]
         gc = gspread.service_account_from_dict(credentials)
         sh = gc.open("Angel_Bot_Logs")
-        try: worksheet = sh.worksheet("Overrides")
-        except gspread.exceptions.WorksheetNotFound: worksheet = sh.add_worksheet(title="Overrides", rows="10", cols="5")
+        val = sh.worksheet("Overrides").acell('A1').value
+        if val:
+            directives = json.loads(val).get("global_directives", {})
+            is_halted = directives.get("active_regime") == "EMERGENCY_HALT"
+            sizing_mult = float(np.clip(float(directives.get("sizing_multiplier", 1.0)), 0.0, 2.0))
+            return is_halted, round(sizing_mult, 1)
+    except Exception:
+        pass
+    return False, 1.0
+
+def transmit_manual_directives(is_halted, manual_sizing_multiplier):
+    payload_str = json.dumps({
+        "global_directives": {
+            "active_regime": "EMERGENCY_HALT" if is_halted else "STABLE",
+            "sizing_multiplier": round(float(manual_sizing_multiplier), 1)
+        }
+    }, indent=4)
+    if 'last_transmitted_payload' in st.session_state and st.session_state['last_transmitted_payload'] == payload_str:
+        return
+    try:
+        credentials = st.secrets["gcp_service_account"]
+        gc = gspread.service_account_from_dict(credentials)
+        sh = gc.open("Angel_Bot_Logs")
+        try:
+            worksheet = sh.worksheet("Overrides")
+        except gspread.exceptions.WorksheetNotFound:
+            worksheet = sh.add_worksheet(title="Overrides", rows="10", cols="5")
         worksheet.update(range_name='A1', values=[[payload_str]])
         st.session_state['last_transmitted_payload'] = payload_str
-    except Exception as e: st.error(f"Agent Comms Failure: Could not write to Google Sheets. {e}")
+        load_saved_overrides.clear()
+    except Exception as e:
+        st.error(f"Agent Comms Failure: Could not write to Google Sheets. {e}")
 
 def format_log_line(line):
     clean_line = line.replace("<", "&lt;").replace(">", "&gt;")
@@ -2027,12 +2054,25 @@ def build_pdf_report(df_trades, df_monthly, df_fy, positions=None):
 # === SIDEBAR CONFIG ===
 with st.sidebar:
     st.header("🦅 AQI Mission Control")
-    auto_refresh = st.toggle("Enable Auto-Refresh (60s)", value=True)
+    auto_refresh = st.toggle("Enable Auto-Refresh (60s)", value=True, key="auto_refresh_state")
     st.divider()
     st.subheader("🚨 Emergency Overrides")
     st.caption("Manual intervention only. Overrides Trading Agent autonomy.")
-    sys_halt = st.checkbox("🛑 HALT ALL NEW ENTRIES")
-    sys_sizing = st.slider("Global Sizing Multiplier", 0.0, 2.0, 1.0, 0.1)
+
+    if 'sys_halt_state' not in st.session_state or 'sys_sizing_state' not in st.session_state:
+        saved_halt, saved_sizing = load_saved_overrides()
+        st.session_state['sys_halt_state'] = saved_halt
+        st.session_state['sys_sizing_state'] = saved_sizing
+        # Prime last_transmitted_payload so initial load doesn't trigger a redundant Sheets write
+        st.session_state['last_transmitted_payload'] = json.dumps({
+            "global_directives": {
+                "active_regime": "EMERGENCY_HALT" if saved_halt else "STABLE",
+                "sizing_multiplier": round(float(saved_sizing), 1)
+            }
+        }, indent=4)
+
+    sys_halt = st.checkbox("🛑 HALT ALL NEW ENTRIES", key="sys_halt_state")
+    sys_sizing = st.slider("Global Sizing Multiplier", 0.0, 2.0, step=0.1, key="sys_sizing_state")
     transmit_manual_directives(sys_halt, sys_sizing)
     st.divider()
     st.subheader("🔮 Projection Tuning")
