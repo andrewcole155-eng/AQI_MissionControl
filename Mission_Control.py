@@ -893,26 +893,15 @@ def calculate_advanced_metrics(hist_df, df_ex=None):
     profit_factor = (positive_sum / negative_sum) if negative_sum > 0 else float('inf')
 
     # --- BENCHMARK ALIGNMENT (SPY) ---
-    if 'benchmark_return' not in df.columns or df['benchmark_return'].abs().sum() == 0:
-        try:
-            start_str = (start_date - pd.Timedelta(days=5)).strftime('%Y-%m-%d')
-            spy_data = get_historical_spy(start_str)
-            if not spy_data.empty:
-                df['date_only'] = df['timestamp'].dt.tz_localize(None).dt.floor('D')
-                spy_data['date_only'] = spy_data.index
-                df = pd.merge(df, spy_data, on='date_only', how='left')
-                df['benchmark_return'] = df['spy_return'].fillna(0.0)
-                df.drop(columns=['date_only', 'spy_return'], inplace=True, errors='ignore')
-        except Exception:
-            pass
-
-    if 'benchmark_return' in df.columns and len(df) > 5:
-        aligned_bench = df['benchmark_return'].fillna(0.0)
-        active_return = returns - aligned_bench
+    aligned_df = align_portfolio_with_spy(df.iloc[1:])  # Drop row 0 (no prior-day return)
+    if len(aligned_df) > 5:
+        p_ret = aligned_df['daily_return']
+        b_ret = aligned_df['spy_return']
+        active_return = p_ret - b_ret
         tracking_error = active_return.std() * np.sqrt(252)
         information_ratio = (active_return.mean() * 252) / tracking_error if tracking_error > 1e-6 else 0.0
-        bench_var = aligned_bench.var()
-        beta_val = returns.cov(aligned_bench) / bench_var if bench_var > 1e-6 else 0.0
+        bench_var = b_ret.var()
+        beta_val = p_ret.cov(b_ret) / bench_var if bench_var > 1e-6 else 0.0
     else:
         information_ratio, beta_val = 0.0, 0.0
 
@@ -1237,7 +1226,7 @@ def calculate_future_projections(current_equity, target_cagr, weekly_deposits=[0
         projections.append(row)
     return pd.DataFrame(projections)
 
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=3600)  # Refresh hourly instead of every 24h
 def get_historical_spy(start_date_str):
     try:
         spy = yf.download("SPY", start=start_date_str, progress=False, threads=False)
@@ -1246,7 +1235,43 @@ def get_historical_spy(start_date_str):
         df.index = pd.to_datetime(df.index).tz_localize(None).floor('D')
         df['spy_return'] = df['spy_close'].pct_change()
         return df[['spy_return']].dropna()
-    except Exception: return pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
+
+def align_portfolio_with_spy(hist_df):
+    """
+    Maps Alpaca UTC timestamps to US/Eastern market dates, deduplicates to 1 row
+    per trading session (keeping the latest value), and inner-joins with SPY.
+    """
+    if hist_df.empty:
+        return pd.DataFrame(columns=['timestamp', 'daily_return', 'spy_return'])
+
+    df = hist_df[['timestamp', 'daily_return']].copy()
+    if df['timestamp'].dt.tz is None:
+        df['timestamp'] = df['timestamp'].dt.tz_localize('UTC')
+
+    # Convert to US/Eastern market calendar date (shifts 00:00 UTC back to prior ET session)
+    et_ts = df['timestamp'].dt.tz_convert('America/New_York')
+    # If Alpaca stamped 00:00 UTC (= 19:00/20:00 ET prior day), floor('D') lands on the exact US trading date
+    df['market_date'] = et_ts.dt.tz_localize(None).dt.floor('D')
+
+    # Deduplicate same-day rows (e.g., live intraday append + daily bar) by compounding returns
+    daily_df = (
+        df.groupby('market_date', as_index=False)
+          .agg(
+              timestamp=('timestamp', 'last'),
+              daily_return=('daily_return', lambda s: (1.0 + s).prod() - 1.0)
+          )
+    )
+
+    start_str = (daily_df['market_date'].min() - pd.Timedelta(days=5)).strftime('%Y-%m-%d')
+    spy_df = get_historical_spy(start_str)
+    if spy_df.empty:
+        return pd.DataFrame(columns=['timestamp', 'daily_return', 'spy_return'])
+
+    spy_df = spy_df.reset_index().rename(columns={spy_df.index.name or 'index': 'market_date', 'Date': 'market_date'})
+    aligned = pd.merge(daily_df, spy_df[['market_date', 'spy_return']], on='market_date', how='inner').dropna()
+    return aligned.sort_values('market_date').reset_index(drop=True)
 
 @st.cache_data(ttl=3600)
 def run_monte_carlo_simulation(historical_returns, starting_equity, weekly_deposit=140, years=20, paths=500):
@@ -2746,14 +2771,6 @@ with tab2:
 
 with tab3:
     if not hist_df_raw.empty and account:
-        
-        # --- 1. PREPARE LIFETIME TIMELINE & ADJUSTMENTS ---
-        if hist_df_raw['timestamp'].dt.tz is None: 
-            hist_df_raw['timestamp'] = hist_df_raw['timestamp'].dt.tz_localize('UTC')
-        
-        hist_df_raw = pd.concat([hist_df_raw, pd.DataFrame([{'timestamp': pd.Timestamp.now(tz='UTC'), 'equity': float(account['equity'])}])], ignore_index=True)
-        
-        hist_df_adj = apply_twr_adjustments(hist_df_raw.copy(), alpaca_cash_flows=clean_cash_flows)
         current_equity_raw = float(account['equity'])
         
         # --- 2. GLOBAL RECONCILIATION CHECK ---
@@ -3588,21 +3605,14 @@ with tab3:
         st.markdown("### ⚖️ Macro Alignment (Rolling Beta & Correlation to SPY)")
         st.caption("Isolates true Alpha. Beta tracks volatility relative to the S&P 500 (1.0 = moves identical to market). Correlation tracks directional grouping.")
         
-        start_date_str = hist_df_adj['timestamp'].min().strftime('%Y-%m-%d')
-        spy_df = get_historical_spy(start_date_str)
-        
-        if not spy_df.empty:
-            merge_df = hist_df_adj[['timestamp', 'daily_return']].copy()
-            merge_df['date_only'] = merge_df['timestamp'].dt.tz_localize(None).dt.floor('D')
-            spy_df['date_only'] = spy_df.index
-            macro_df = pd.merge(merge_df, spy_df, on='date_only', how='left').fillna(0)
-            
-            # ---> FIXED: Changed from 30 to 20 to perfectly match the 28 Calendar Day matrix
+        macro_df = align_portfolio_with_spy(hist_df_adj)
+        if len(macro_df) >= 20:
             rolling_cov = macro_df['daily_return'].rolling(20).cov(macro_df['spy_return'])
             rolling_spy_var = macro_df['spy_return'].rolling(20).var()
             
-            macro_df['rolling_beta'] = (rolling_cov / rolling_spy_var).replace([np.inf, -np.inf], 0).fillna(0)
-            macro_df['rolling_corr'] = macro_df['daily_return'].rolling(20).corr(macro_df['spy_return']).fillna(0)
+            macro_df['rolling_beta'] = (rolling_cov / rolling_spy_var).replace([np.inf, -np.inf], np.nan)
+            macro_df['rolling_corr'] = macro_df['daily_return'].rolling(20).corr(macro_df['spy_return'])
+            macro_df = macro_df.dropna(subset=['rolling_beta', 'rolling_corr'])
             
             c_mac1, c_mac2 = st.columns(2)
             with c_mac1:
