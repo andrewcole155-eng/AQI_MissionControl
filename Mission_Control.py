@@ -1585,49 +1585,68 @@ def transmit_manual_directives(is_halted, manual_sizing_multiplier):
     except Exception as e:
         st.error(f"Agent Comms Failure: Could not write to Google Sheets. {e}")
 
+@st.cache_data(ttl=60)
 def load_ga_governance_state():
-    """Reads staged candidate and active GA risk gate JSON payloads from shared /app/config."""
+    """Reads staged candidate (A1) and active promoted gates (B1) from Google Sheets GA_Governance tab."""
     candidate_data, active_data = None, None
+    try:
+        credentials = st.secrets["gcp_service_account"]
+        gc = gspread.service_account_from_dict(credentials)
+        sh = gc.open("Angel_Bot_Logs")
+        ws = sh.worksheet("GA_Governance")
+        cand_str = ws.acell("A1").value
+        act_str = ws.acell("B1").value
+        if cand_str:
+            candidate_data = json.loads(cand_str)
+        if act_str:
+            active_data = json.loads(act_str)
+        return candidate_data, active_data
+    except Exception:
+        pass
+
+    # Local disk fallback if running on VPS directly
     if os.path.exists(GA_CANDIDATE_PATH):
         try:
-            with open(GA_CANDIDATE_PATH, 'r') as f:
-                candidate_data = json.load(f)
-        except Exception as e:
-            st.warning(f"Could not parse GA candidate JSON: {e}")
-
+            with open(GA_CANDIDATE_PATH, 'r') as f: candidate_data = json.load(f)
+        except Exception: pass
     if os.path.exists(GA_ACTIVE_PATH):
         try:
-            with open(GA_ACTIVE_PATH, 'r') as f:
-                active_data = json.load(f)
-        except Exception as e:
-            st.warning(f"Could not parse GA active JSON: {e}")
-
+            with open(GA_ACTIVE_PATH, 'r') as f: active_data = json.load(f)
+        except Exception: pass
     return candidate_data, active_data
 
 def promote_ga_candidate(candidate_payload):
-    """Atomically promotes the staged GA candidate JSON to ga_risk_gates_active.json."""
+    """Writes promoted GA candidate to Google Sheets (GA_Governance!B1) so the VPS Trading Agent pulls it."""
     try:
-        os.makedirs(CONFIG_DIR, exist_ok=True)
         promoted_payload = json.loads(json.dumps(candidate_payload))
         promoted_payload["promoted_at_utc"] = datetime.now(pytz.utc).isoformat()
-        promoted_payload["promoted_via"] = "Mission_Control"
+        promoted_payload["promoted_via"] = "Mission_Control_Cloud"
 
-        tmp_path = GA_ACTIVE_PATH + ".tmp"
-        with open(tmp_path, 'w') as f:
-            json.dump(promoted_payload, f, indent=4)
-        os.replace(tmp_path, GA_ACTIVE_PATH)
-        return True, "Promoted candidate to active live config. Takes effect on next Trading Agent startup."
+        credentials = st.secrets["gcp_service_account"]
+        gc = gspread.service_account_from_dict(credentials)
+        sh = gc.open("Angel_Bot_Logs")
+        try:
+            ws = sh.worksheet("GA_Governance")
+        except gspread.exceptions.WorksheetNotFound:
+            ws = sh.add_worksheet(title="GA_Governance", rows="5", cols="3")
+        ws.update(range_name="B1", values=[[json.dumps(promoted_payload)]])
+        load_ga_governance_state.clear()
+        return True, "Promoted to Cloud Bridge (GA_Governance!B1). Trading Agent will sync automatically."
     except Exception as e:
-        return False, f"Promotion failed: {e}"
+        return False, f"Cloud Promotion failed: {e}"
 
 def rollback_ga_active():
-    """Removes ga_risk_gates_active.json so the Trading Agent reverts to static defaults."""
+    """Clears GA_Governance!B1 in Google Sheets so the Trading Agent reverts to static defaults."""
     try:
-        if os.path.exists(GA_ACTIVE_PATH):
-            os.remove(GA_ACTIVE_PATH)
-        return True, "Active GA overrides removed. Trading Agent will revert to static defaults on next startup."
+        credentials = st.secrets["gcp_service_account"]
+        gc = gspread.service_account_from_dict(credentials)
+        sh = gc.open("Angel_Bot_Logs")
+        ws = sh.worksheet("GA_Governance")
+        ws.update(range_name="B1", values=[[""]])
+        load_ga_governance_state.clear()
+        return True, "Cleared active GA overrides in Cloud Bridge. Trading Agent will revert to static defaults."
     except Exception as e:
-        return False, f"Rollback failed: {e}"
+        return False, f"Cloud Rollback failed: {e}"
 
 def format_log_line(line):
     clean_line = line.replace("<", "&lt;").replace(">", "&gt;")
