@@ -56,6 +56,21 @@ MODELS_DIR = os.path.join(ROOT_DIR, 'Models')
 
 ALPACA_CONFIG_PATH = os.path.join(CONFIG_DIR, 'config_Alpaca_REAL_V2.json')
 
+# --- GA Risk Gate Governance Paths & Baseline Defaults ---
+GA_CANDIDATE_PATH = os.path.join(CONFIG_DIR, 'ga_risk_gates_candidate.json')
+GA_ACTIVE_PATH = os.path.join(CONFIG_DIR, 'ga_risk_gates_active.json')
+
+GA_STATIC_DEFAULTS = {
+    "RATCHET_TIER1_MFE_R": 0.60,
+    "CORE_RUNNER_TRIGGER_R": 1.10,
+    "RATCHET_TIER2_MFE_R": 1.10,
+    "RATCHET_TIER3_TRAIL_OFFSET_R": 0.30,
+    "STAGNATION_DAYS": 7,
+    "DEGRADED_HIGH_VOL_CONF_GATE": 0.55,
+    "OPPOSITE_SIGNAL_EXIT_CONF": 0.55,
+    "KELLY_MULT_MAX": 1.50,
+}
+
 # === STYLING ===
 st.markdown("""
     <style>
@@ -1569,6 +1584,50 @@ def transmit_manual_directives(is_halted, manual_sizing_multiplier):
         load_saved_overrides.clear()
     except Exception as e:
         st.error(f"Agent Comms Failure: Could not write to Google Sheets. {e}")
+
+def load_ga_governance_state():
+    """Reads staged candidate and active GA risk gate JSON payloads from shared /app/config."""
+    candidate_data, active_data = None, None
+    if os.path.exists(GA_CANDIDATE_PATH):
+        try:
+            with open(GA_CANDIDATE_PATH, 'r') as f:
+                candidate_data = json.load(f)
+        except Exception as e:
+            st.warning(f"Could not parse GA candidate JSON: {e}")
+
+    if os.path.exists(GA_ACTIVE_PATH):
+        try:
+            with open(GA_ACTIVE_PATH, 'r') as f:
+                active_data = json.load(f)
+        except Exception as e:
+            st.warning(f"Could not parse GA active JSON: {e}")
+
+    return candidate_data, active_data
+
+def promote_ga_candidate(candidate_payload):
+    """Atomically promotes the staged GA candidate JSON to ga_risk_gates_active.json."""
+    try:
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        promoted_payload = json.loads(json.dumps(candidate_payload))
+        promoted_payload["promoted_at_utc"] = datetime.now(pytz.utc).isoformat()
+        promoted_payload["promoted_via"] = "Mission_Control"
+
+        tmp_path = GA_ACTIVE_PATH + ".tmp"
+        with open(tmp_path, 'w') as f:
+            json.dump(promoted_payload, f, indent=4)
+        os.replace(tmp_path, GA_ACTIVE_PATH)
+        return True, "Promoted candidate to active live config. Takes effect on next Trading Agent startup."
+    except Exception as e:
+        return False, f"Promotion failed: {e}"
+
+def rollback_ga_active():
+    """Removes ga_risk_gates_active.json so the Trading Agent reverts to static defaults."""
+    try:
+        if os.path.exists(GA_ACTIVE_PATH):
+            os.remove(GA_ACTIVE_PATH)
+        return True, "Active GA overrides removed. Trading Agent will revert to static defaults on next startup."
+    except Exception as e:
+        return False, f"Rollback failed: {e}"
 
 def format_log_line(line):
     clean_line = line.replace("<", "&lt;").replace(">", "&gt;")
@@ -3915,6 +3974,136 @@ with tab5:
 with tab6:
     st.subheader("🧬 Quantum Alpha Model Lifecycle & Shadow Fleet Monitor")
     st.caption("Real-time alignment tracking between weekend optimization blueprints, shadow paper trading, and live execution.")
+
+    # --- 0. OFFLINE GA RISK GATE GOVERNANCE & VIRTUAL PROMOTION ---
+    st.markdown("### 🧬 Offline GA Risk Gate Governance")
+    ga_candidate, ga_active = load_ga_governance_state()
+
+    if ga_candidate or ga_active:
+        active_genes = ga_active.get("candidate_genes", {}) if ga_active else {}
+        cand_genes = ga_candidate.get("candidate_genes", {}) if ga_candidate else {}
+
+        is_synced = bool(ga_candidate and ga_active and active_genes == cand_genes)
+        rec_promo = bool(ga_candidate.get("recommended_promotion", False)) if ga_candidate else False
+
+        # Status Banner
+        if is_synced:
+            st.success(
+                f"🟢 **LIVE OVERRIDES ACTIVE & SYNCED** — Promoted at `{ga_active.get('promoted_at_utc', 'N/A')[:19]} UTC` "
+                f"({len(active_genes)} evolved parameters active)."
+            )
+        elif ga_candidate and rec_promo:
+            st.warning(
+                f"🟡 **NEW GA CANDIDATE READY FOR PROMOTION** — Generated `{ga_candidate.get('generated_at_utc', 'N/A')[:19]} UTC` "
+                f"across `{ga_candidate.get('episodes_evaluated', 0)}` Neo4j episodes."
+            )
+        elif ga_active:
+            st.info(f"🔵 **ACTIVE GA OVERRIDES RUNNING** — Staged candidate did not clear promotion hurdle (holding current active gates).")
+        else:
+            st.info("⚪ **STATIC DEFAULTS ACTIVE** — Latest GA candidate did not recommend promotion.")
+
+        # OOS Comparison Metrics (from Candidate)
+        if ga_candidate and "oos_comparison" in ga_candidate:
+            oos = ga_candidate["oos_comparison"]
+            b_st = oos.get("baseline_stats", {})
+            e_st = oos.get("evolved_stats", {})
+
+            gm1, gm2, gm3, gm4, gm5 = st.columns(5)
+            gm1.metric(
+                "OOS Fitness",
+                f"{oos.get('evolved_fitness', 0.0):.3f}",
+                f"{oos.get('evolved_fitness', 0.0) - oos.get('baseline_fitness', 0.0):+.3f} vs Base"
+            )
+            gm2.metric(
+                "OOS Sortino",
+                f"{e_st.get('sortino', 0.0):.3f}",
+                f"{e_st.get('sortino', 0.0) - b_st.get('sortino', 0.0):+.3f} vs Base"
+            )
+            gm3.metric(
+                "OOS Max Drawdown",
+                f"{e_st.get('max_dd', 0.0):.2%}",
+                f"{(e_st.get('max_dd', 0.0) - b_st.get('max_dd', 0.0)) * 100:+.2f}% vs Base"
+            )
+            gm4.metric(
+                "Avg Giveback (R)",
+                f"{e_st.get('avg_giveback_r', 0.0):.3f}R",
+                f"{e_st.get('avg_giveback_r', 0.0) - b_st.get('avg_giveback_r', 0.0):+.3f}R",
+                delta_color="inverse"
+            )
+            if "evolved_rolling_fitness" in oos:
+                gm5.metric(
+                    "3-Fold Rolling Fit",
+                    f"{oos.get('evolved_rolling_fitness', 0.0):.3f}",
+                    f"{oos.get('evolved_rolling_fitness', 0.0) - oos.get('baseline_rolling_fitness', 0.0):+.3f} vs Base"
+                )
+            else:
+                gm5.metric(
+                    "OOS Trades",
+                    f"{e_st.get('trades', 0)}",
+                    f"Base: {b_st.get('trades', 0)}",
+                    delta_color="off"
+                )
+
+        # Side-by-Side Parameter Comparison Table
+        all_gene_keys = list(GA_STATIC_DEFAULTS.keys())
+        gene_rows = []
+        for k in all_gene_keys:
+            static_val = GA_STATIC_DEFAULTS[k]
+            active_val = active_genes.get(k, static_val) if ga_active else static_val
+            cand_val = cand_genes.get(k, None)
+            delta_vs_active = (cand_val - active_val) if cand_val is not None else 0.0
+            gene_rows.append({
+                "Risk Parameter": k,
+                "Static Default": static_val,
+                "Active Live": active_val,
+                "Staged Candidate": cand_val if cand_val is not None else "—",
+                "Delta (Cand vs Live)": f"{delta_vs_active:+.3f}" if cand_val is not None else "—"
+            })
+
+        st.dataframe(pd.DataFrame(gene_rows), width="stretch", hide_index=True)
+
+        # Action Controls: Promote & Rollback
+        btn_col1, btn_col2, btn_col3 = st.columns([1.5, 1.5, 3])
+        with btn_col1:
+            if st.button(
+                "🚀 Promote Candidate to Active",
+                type="primary",
+                disabled=(not ga_candidate or is_synced),
+                key="ga_promote_btn",
+                width="stretch"
+            ):
+                ok, msg = promote_ga_candidate(ga_candidate)
+                if ok:
+                    st.success(msg)
+                    time.sleep(0.8)
+                    st.rerun()
+                else:
+                    st.error(msg)
+
+        with btn_col2:
+            if st.button(
+                "⏪ Rollback to Static Defaults",
+                disabled=(not ga_active),
+                key="ga_rollback_btn",
+                width="stretch"
+            ):
+                ok, msg = rollback_ga_active()
+                if ok:
+                    st.warning(msg)
+                    time.sleep(0.8)
+                    st.rerun()
+                else:
+                    st.error(msg)
+
+        with btn_col3:
+            st.caption(
+                "Promoted gates write atomically to `/app/config/ga_risk_gates_active.json` "
+                "and load automatically when `ALPACA_Trading_Bot_REAL_V11.py` starts."
+            )
+    else:
+        st.info("No GA candidate or active risk gate JSON found in `/app/config/`. Run `optimization/ga_risk_evolver.py` to generate one.")
+
+    st.divider()
 
     if model_health:
         if isinstance(model_health, str):
