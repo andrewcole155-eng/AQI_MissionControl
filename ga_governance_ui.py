@@ -52,6 +52,8 @@ def load_ga_governance_bundle(candidate_path, active_path):
         gc = gspread.service_account_from_dict(credentials)
         sh = gc.open("Angel_Bot_Logs")
         ws = sh.worksheet("GA_Governance")
+        if ws.col_count < 4:
+            ws.add_cols(4 - ws.col_count)
         row_vals = ws.row_values(1)
         if len(row_vals) >= 1 and row_vals[0].strip():
             candidate_data = json.loads(row_vals[0])
@@ -124,8 +126,10 @@ def submit_governance_decision(candidate_payload, decision, reviewer, rationale,
         sh = gc.open("Angel_Bot_Logs")
         try:
             ws = sh.worksheet("GA_Governance")
+            if ws.col_count < 4:
+                ws.add_cols(4 - ws.col_count)
         except gspread.exceptions.WorksheetNotFound:
-            ws = sh.add_worksheet(title="GA_Governance", rows="5", cols="4")
+            ws = sh.add_worksheet(title="GA_Governance", rows="5", cols="5")
 
         decision_meta = {
             "candidate_id": cand_id,
@@ -187,8 +191,10 @@ def trigger_remote_ga_evolution(reviewer):
         sh = gc.open("Angel_Bot_Logs")
         try:
             ws = sh.worksheet("GA_Governance")
+            if ws.col_count < 4:
+                ws.add_cols(4 - ws.col_count)
         except gspread.exceptions.WorksheetNotFound:
-            ws = sh.add_worksheet(title="GA_Governance", rows="5", cols="4")
+            ws = sh.add_worksheet(title="GA_Governance", rows="5", cols="5")
         ws.update(range_name="D1", values=[[json.dumps(cmd_payload)]])
         load_ga_governance_bundle.clear()
         return True, f"Queued remote GA evolution ({req_id}). AndrewSSH will pick it up within 60 seconds."
