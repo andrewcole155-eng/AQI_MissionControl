@@ -101,7 +101,7 @@ def _append_audit_record(sh, record_dict):
         ws_audit.append_row(headers)
 
     row = [record_dict.get(h, "") for h in headers]
-    ws_audit.append_row(row, value_input_option="USER_ENTERED")
+    ws_audit.append_row(row, value_input_option="RAW")
 
 
 def submit_governance_decision(candidate_payload, decision, reviewer, rationale, system_verdict):
@@ -182,7 +182,12 @@ def evaluate_criteria_and_explainability(ga_candidate, ga_active):
 
     b_fit = float(oos.get("baseline_fitness", 0.0))
     e_fit = float(oos.get("evolved_fitness", 0.0))
-    inc_fit = float(oos.get("incumbent_fitness", b_fit))
+    if ga_candidate.get("has_active_incumbent", False):
+        inc_fit = float(oos.get("incumbent_fitness", b_fit))
+    elif ga_active and "oos_comparison" in ga_active:
+        inc_fit = float(ga_active["oos_comparison"].get("evolved_fitness", b_fit))
+    else:
+        inc_fit = b_fit
     b_roll = float(oos.get("baseline_rolling_fitness", 0.0))
     e_roll = float(oos.get("evolved_rolling_fitness", 0.0))
     is_fit = float(train.get("evolved_fitness", e_fit))
@@ -398,12 +403,13 @@ def build_gene_bounds_dumbbell(cand_genes, active_genes):
     fig.add_vline(x=2, line_dash="dot", line_color="#ffb000", opacity=0.4)
     fig.add_vline(x=98, line_dash="dot", line_color="#ffb000", opacity=0.4)
     fig.update_layout(
-        title="Gene Position Within Search Bounds (0% = Lower Wall, 100% = Upper Wall)",
+        title=dict(text="Gene Position Within Search Bounds (0% = Lower Wall, 100% = Upper Wall)", y=0.96),
         xaxis=dict(title="Normalized Position in Search Space (%)", range=[-5, 105], gridcolor="#333"),
         yaxis=dict(autorange="reversed", gridcolor="#2a2a2a"),
-        height=390, margin=dict(l=10, r=10, t=40, b=30),
+        height=390, margin=dict(l=10, r=10, t=65, b=30),
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#cccccc"), legend=dict(orientation="h", y=1.15, x=0)
+        font=dict(color="#cccccc"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0)
     )
     return fig
 
@@ -423,12 +429,13 @@ def build_oos_equity_chart(oos_curves, has_incumbent):
 
     fig.add_hline(y=0, line_dash="dash", line_color="rgba(255,255,255,0.3)")
     fig.update_layout(
-        title="Out-of-Sample Cumulative Equity Replay (%)",
+        title=dict(text="Out-of-Sample Cumulative Equity Replay (%)", y=0.96),
         xaxis=dict(title="Executed OOS Trade Sequence", gridcolor="#333"),
         yaxis=dict(title="Cumulative Return (%)", gridcolor="#333"),
-        height=300, margin=dict(l=10, r=10, t=40, b=30),
+        height=320, margin=dict(l=10, r=10, t=65, b=30),
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#cccccc"), legend=dict(orientation="h", y=1.15, x=0)
+        font=dict(color="#cccccc"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0)
     )
     return fig
 
@@ -449,11 +456,12 @@ def build_rolling_folds_chart(rolling_folds, has_incumbent):
 
     fig.add_hline(y=0, line_dash="dash", line_color="white")
     fig.update_layout(
-        title="3-Fold Chronological Walk-Forward Fitness Dispersion",
-        barmode="group", height=290, margin=dict(l=10, r=10, t=40, b=30),
+        title=dict(text="3-Fold Chronological Walk-Forward Fitness Dispersion", y=0.96),
+        barmode="group", height=310, margin=dict(l=10, r=10, t=65, b=30),
         yaxis=dict(title="Fold Fitness", gridcolor="#333"),
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#cccccc"), legend=dict(orientation="h", y=1.15, x=0)
+        font=dict(color="#cccccc"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0)
     )
     return fig
 
