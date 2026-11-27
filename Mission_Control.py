@@ -32,10 +32,8 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import landscape, A4
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
 from reportlab.lib.styles import getSampleStyleSheet
-try:
-    from src.aqi_core.ga_governance_ui import render_ga_governance_panel
-except ModuleNotFoundError:
-    from ga_governance_ui import render_ga_governance_panel
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from ga_governance_ui import render_ga_governance_panel
 
 # --- SUPPRESS THIRD-PARTY WARNINGS ---
 warnings.filterwarnings("ignore", category=FutureWarning, module="yfinance")
