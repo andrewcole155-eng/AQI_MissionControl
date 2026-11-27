@@ -71,6 +71,10 @@ GA_STATIC_DEFAULTS = {
     "DEGRADED_HIGH_VOL_CONF_GATE": 0.55,
     "OPPOSITE_SIGNAL_EXIT_CONF": 0.55,
     "KELLY_MULT_MAX": 1.50,
+    "CFC_TRAIL_GAIN": 0.00,
+    "CFC_TAU_SCALE": 1.00,
+    "CFC_VOL_SENS": 0.00,
+    "CFC_MOM_SENS": 0.00,
 }
 
 # === STYLING ===
@@ -2661,9 +2665,9 @@ with tab1:
                 current_atr = float(t_state.get("entry_atr", conviction_data.get(sym, {}).get("ATR", 0.03) if conviction_data else 0.03))
                 current_atr = float(np.clip(current_atr, 0.01, 0.12))
 
-                # Synced with Bot: Bounded Initial SL (2.5% - 10.0%) & Asymmetric TP (Long 2.5x/15%, Short 2.0x/12.5%)
+                # Synced with Bot V11: Bounded Initial SL (2.5% - 10.0%) & Asymmetric TP (Long 3.0x/18%, Short 2.25x/15%)
                 base_sl = float(np.clip(current_atr * 1.50, 0.025, 0.100))
-                active_tp = float(np.clip(current_atr * (2.50 if side == 'long' else 2.00), 0.045, 0.150 if side == 'long' else 0.125))
+                active_tp = float(np.clip(current_atr * (3.00 if side == 'long' else 2.25), 0.045, 0.180 if side == 'long' else 0.150))
                 
                 if side == 'long':
                     sl, tp = entry * (1 - base_sl), entry * (1 + active_tp)
@@ -2671,6 +2675,11 @@ with tab1:
                 else:
                     sl, tp = entry * (1 + base_sl), entry * (1 - active_tp)
                     progress = max(0.0, min(1.0, (sl - current) / (sl - tp)))
+
+                ratchet_tag = str(t_state.get("max_ratchet_tag", "BASE"))
+                cfc_mult = float(t_state.get("cfc_mult", 1.0))
+                runner_active = bool(t_state.get("runner_active", False))
+                stop_status = f"🏃 {ratchet_tag}" if runner_active else (f"🛡️ {ratchet_tag}" if ratchet_tag != "BASE" else "BASE")
 
                 days_held = 0
                 max_hold_display = 15
@@ -2692,26 +2701,46 @@ with tab1:
 
                 pos_data.append({
                     "Ticker": sym, "Side": side.upper(), "Invested": entry * qty, "Qty": qty,
-                    "P/L (%)": float(p['unrealized_plpc']) * 100, "Journey": progress, "Days Held": f"{days_held}/{max_hold_display}",
-                    "_base_sl": base_sl
+                    "P/L (%)": float(p['unrealized_plpc']) * 100, "Journey": progress,
+                    "Stop / CfC": stop_status, "Days Held": f"{days_held}/{max_hold_display}",
+                    "_base_sl": base_sl, "_ratchet_tag": ratchet_tag, "_cfc_mult": cfc_mult
                 })
             
-            df_pos_disp = pd.DataFrame(pos_data).drop(columns=['_base_sl'])
-            st.dataframe(df_pos_disp, width='stretch', column_config={"Invested": st.column_config.NumberColumn("Invested", format="$%.2f"), "P/L (%)": st.column_config.NumberColumn("P/L (%)", format="%.2f%%"), "Journey": st.column_config.ProgressColumn("Journey to TP", help="Green bar moving right towards Take Profit.", min_value=0.0, max_value=1.0, format="%.2f")}, hide_index=True)
+            df_pos_disp = pd.DataFrame(pos_data).drop(columns=['_base_sl', '_ratchet_tag', '_cfc_mult'])
+            st.dataframe(
+                df_pos_disp,
+                width='stretch',
+                column_config={
+                    "Invested": st.column_config.NumberColumn("Invested", format="$%.2f"),
+                    "P/L (%)": st.column_config.NumberColumn("P/L (%)", format="%.2f%%"),
+                    "Journey": st.column_config.ProgressColumn("Journey to TP", help="Green bar moving right towards Take Profit.", min_value=0.0, max_value=1.0, format="%.2f"),
+                },
+                hide_index=True
+            )
 
             st.markdown("##### 🎯 Immediate Flashpoints (True R-Multiple)")
             closest_tp, closest_sl = None, None
             max_r, min_r = -999.0, 999.0
+            top_tag, top_cfc = "BASE", 1.0
 
             for p_data in pos_data:
                 true_r = p_data["P/L (%)"] / (p_data["_base_sl"] * 100.0)
-                if true_r > max_r: max_r, closest_tp = true_r, p_data["Ticker"]
-                if true_r < min_r: min_r, closest_sl = true_r, p_data["Ticker"]
+                if true_r > max_r:
+                    max_r, closest_tp = true_r, p_data["Ticker"]
+                    top_tag, top_cfc = p_data["_ratchet_tag"], p_data["_cfc_mult"]
+                if true_r < min_r:
+                    min_r, closest_sl = true_r, p_data["Ticker"]
 
             f1, f2 = st.columns(2)
             if closest_tp and max_r > 0:
-                shield_tag = " [🛡️ Ratchet Active]" if max_r >= 0.85 else ""
-                f1.success(f"🟢 **Highest R:** {closest_tp} (Floating: +{max_r:.2f}R){shield_tag}")
+                if top_tag != "BASE":
+                    shield_tag = f" [🛡️ {top_tag}]"
+                elif max_r >= 0.60:
+                    shield_tag = " [🛡️ Ratchet Armed]"
+                else:
+                    shield_tag = ""
+                cfc_note = f" | CfC: {top_cfc:.2f}x" if abs(top_cfc - 1.0) > 1e-4 else ""
+                f1.success(f"🟢 **Highest R:** {closest_tp} (Floating: +{max_r:.2f}R){shield_tag}{cfc_note}")
             if closest_sl and min_r < 0:
                 f2.error(f"🔴 **Lowest R:** {closest_sl} (Floating: {min_r:.2f}R)")
                 

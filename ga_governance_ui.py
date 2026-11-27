@@ -11,13 +11,17 @@ import gspread
 
 # --- Canonical Search Bounds & Static Defaults (Synced with ga_risk_evolver.py) ---
 GA_GENE_BOUNDS = {
-    "RATCHET_TIER1_MFE_R":          (0.45, 0.90),
-    "CORE_RUNNER_TRIGGER_R":        (0.95, 1.50),
-    "RATCHET_TIER3_TRAIL_OFFSET_R": (0.20, 0.55),
-    "STAGNATION_DAYS":              (4,    10),
-    "DEGRADED_HIGH_VOL_CONF_GATE":  (0.48, 0.68),
-    "OPPOSITE_SIGNAL_EXIT_CONF":    (0.45, 0.70),
-    "KELLY_MULT_MAX":               (1.10, 1.60),
+    "RATCHET_TIER1_MFE_R":          (0.45,  0.90),
+    "CORE_RUNNER_TRIGGER_R":        (0.95,  1.50),
+    "RATCHET_TIER3_TRAIL_OFFSET_R": (0.20,  0.55),
+    "STAGNATION_DAYS":              (4,     10),
+    "DEGRADED_HIGH_VOL_CONF_GATE":  (0.48,  0.68),
+    "OPPOSITE_SIGNAL_EXIT_CONF":    (0.45,  0.70),
+    "KELLY_MULT_MAX":               (1.10,  1.60),
+    "CFC_TRAIL_GAIN":               (0.00,  0.25),
+    "CFC_TAU_SCALE":                (0.25,  2.50),
+    "CFC_VOL_SENS":                 (-1.50, 1.50),
+    "CFC_MOM_SENS":                 (-1.50, 1.50),
 }
 
 GA_STATIC_DEFAULTS = {
@@ -29,6 +33,10 @@ GA_STATIC_DEFAULTS = {
     "DEGRADED_HIGH_VOL_CONF_GATE": 0.55,
     "OPPOSITE_SIGNAL_EXIT_CONF": 0.55,
     "KELLY_MULT_MAX": 1.50,
+    "CFC_TRAIL_GAIN": 0.00,
+    "CFC_TAU_SCALE": 1.00,
+    "CFC_VOL_SENS": 0.00,
+    "CFC_MOM_SENS": 0.00,
 }
 
 
@@ -393,7 +401,7 @@ def build_gene_bounds_dumbbell(cand_genes, active_genes):
         title="Gene Position Within Search Bounds (0% = Lower Wall, 100% = Upper Wall)",
         xaxis=dict(title="Normalized Position in Search Space (%)", range=[-5, 105], gridcolor="#333"),
         yaxis=dict(autorange="reversed", gridcolor="#2a2a2a"),
-        height=310, margin=dict(l=10, r=10, t=40, b=30),
+        height=390, margin=dict(l=10, r=10, t=40, b=30),
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         font=dict(color="#cccccc"), legend=dict(orientation="h", y=1.15, x=0)
     )
@@ -463,7 +471,7 @@ def build_sensitivity_chart(sensitivity_dict):
         title="Local Parameter Fragility (Max OOS Fitness Drop at ±10% Perturbation)",
         xaxis=dict(title="Worst-Case Fitness Drop (Lower = More Robust)", gridcolor="#333"),
         yaxis=dict(autorange="reversed"),
-        height=290, margin=dict(l=10, r=30, t=40, b=30),
+        height=360, margin=dict(l=10, r=30, t=40, b=30),
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         font=dict(color="#cccccc")
     )
