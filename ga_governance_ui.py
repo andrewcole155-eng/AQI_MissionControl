@@ -43,10 +43,10 @@ GA_STATIC_DEFAULTS = {
 # ==============================================================================
 # 1. GOOGLE SHEETS CLOUD BRIDGE & AUDIT TRAIL I/O
 # ==============================================================================
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=15)
 def load_ga_governance_bundle(candidate_path, active_path):
-    """Loads Candidate (A1), Active Promoted (B1), Decision State (C1), and Audit Log."""
-    candidate_data, active_data, decision_state, audit_df = None, None, None, pd.DataFrame()
+    """Loads Candidate (A1), Active Promoted (B1), Decision State (C1), Remote Run State (D1), and Audit Log."""
+    candidate_data, active_data, decision_state, run_state, audit_df = None, None, None, None, pd.DataFrame()
     try:
         credentials = st.secrets["gcp_service_account"]
         gc = gspread.service_account_from_dict(credentials)
@@ -59,6 +59,8 @@ def load_ga_governance_bundle(candidate_path, active_path):
             active_data = json.loads(row_vals[1])
         if len(row_vals) >= 3 and row_vals[2].strip():
             decision_state = json.loads(row_vals[2])
+        if len(row_vals) >= 4 and row_vals[3].strip():
+            run_state = json.loads(row_vals[3])
 
         try:
             ws_audit = sh.worksheet("GA_Audit_Log")
@@ -67,7 +69,7 @@ def load_ga_governance_bundle(candidate_path, active_path):
                 audit_df = pd.DataFrame(recs)
         except gspread.exceptions.WorksheetNotFound:
             pass
-        return candidate_data, active_data, decision_state, audit_df
+        return candidate_data, active_data, decision_state, run_state, audit_df
     except Exception:
         pass
 
@@ -84,7 +86,7 @@ def load_ga_governance_bundle(candidate_path, active_path):
                 active_data = json.load(f)
         except Exception:
             pass
-    return candidate_data, active_data, decision_state, audit_df
+    return candidate_data, active_data, decision_state, run_state, audit_df
 
 
 def _append_audit_record(sh, record_dict):
@@ -166,6 +168,32 @@ def submit_governance_decision(candidate_payload, decision, reviewer, rationale,
         return True, f"Governance decision '{decision}' recorded for {cand_id} and logged to GA_Audit_Log."
     except Exception as e:
         return False, f"Governance write failed: {e}"
+
+
+def trigger_remote_ga_evolution(reviewer):
+    """Queues an on-demand ga_risk_evolver.py execution on AndrewSSH via GA_Governance!D1."""
+    now_iso = datetime.now(pytz.utc).isoformat()
+    req_id = f"REQ-{datetime.now(pytz.utc).strftime('%Y%m%d-%H%M%S')}"
+    cmd_payload = {
+        "request_id": req_id,
+        "status": "REQUESTED",
+        "requested_by": reviewer,
+        "requested_at_utc": now_iso,
+        "message": "Queued from Mission Control — awaiting AndrewSSH watcher (<= 60s).",
+    }
+    try:
+        credentials = st.secrets["gcp_service_account"]
+        gc = gspread.service_account_from_dict(credentials)
+        sh = gc.open("Angel_Bot_Logs")
+        try:
+            ws = sh.worksheet("GA_Governance")
+        except gspread.exceptions.WorksheetNotFound:
+            ws = sh.add_worksheet(title="GA_Governance", rows="5", cols="4")
+        ws.update(range_name="D1", values=[[json.dumps(cmd_payload)]])
+        load_ga_governance_bundle.clear()
+        return True, f"Queued remote GA evolution ({req_id}). AndrewSSH will pick it up within 60 seconds."
+    except Exception as e:
+        return False, f"Failed to queue remote GA run: {e}"
 
 
 # ==============================================================================
@@ -512,10 +540,39 @@ def build_return_distribution_chart(oos_curves):
 # ==============================================================================
 def render_ga_governance_panel(candidate_path, active_path):
     st.markdown("### 🧬 Institutional GA Risk Gate Governance")
-    ga_candidate, ga_active, decision_state, audit_df = load_ga_governance_bundle(candidate_path, active_path)
+    ga_candidate, ga_active, decision_state, run_state, audit_df = load_ga_governance_bundle(candidate_path, active_path)
+
+    # --------------------------------------------------------------------------
+    # 0. ON-DEMAND REMOTE GA EVOLVER TRIGGER (VIA GA_Governance!D1)
+    # --------------------------------------------------------------------------
+    run_status = (run_state or {}).get("status", "IDLE")
+    is_busy = run_status in ["REQUESTED", "RUNNING"]
+
+    r_col1, r_col2 = st.columns([1.4, 3.6])
+    with r_col1:
+        if st.button(
+            "⏳ Evolution Running..." if is_busy else "🧬 Run GA Evolver Now",
+            disabled=is_busy,
+            key="ga_remote_run_btn",
+            width="stretch",
+        ):
+            ok, msg = trigger_remote_ga_evolution(st.session_state.get("ga_reviewer_input", "Andrew Cole"))
+            if ok:
+                st.info(msg)
+                time.sleep(0.6)
+                st.rerun()
+            else:
+                st.error(msg)
+    with r_col2:
+        if run_state:
+            badge = "🟡" if run_status == "REQUESTED" else ("🔵" if run_status == "RUNNING" else ("🟢" if run_status == "COMPLETED" else "🔴"))
+            ts_ref = run_state.get("completed_at_utc") or run_state.get("started_at_utc") or run_state.get("requested_at_utc", "")
+            st.caption(f"{badge} **Remote Evolver Status ({run_status}):** {run_state.get('message', '')} `{ts_ref[:19]}`")
+        else:
+            st.caption("Triggers `optimization/ga_risk_evolver.py` on `AndrewSSH` via `GA_Governance!D1` without opening VS Code.")
 
     if not ga_candidate and not ga_active:
-        st.info("No GA candidate or active risk gate payload found in `GA_Governance!A1/B1`. Run `optimization/ga_risk_evolver.py` to generate one.")
+        st.info("No GA candidate or active risk gate payload found in `GA_Governance!A1/B1`. Click **Run GA Evolver Now** above to generate one.")
         st.divider()
         return
 
