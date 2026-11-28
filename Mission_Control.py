@@ -282,6 +282,17 @@ def get_cloud_telemetry():
         st.warning(f"Telemetry Sync Warning: {e}")
         return {}, {}, {}
 
+@st.cache_data(ttl=3600)
+def get_cached_trading_days(_api, lookback_days=45):
+    """Fetches US trading dates once per hour so open-position loops make zero REST calls."""
+    try:
+        end_dt = pd.Timestamp.now(tz='UTC').date()
+        start_dt = (pd.Timestamp.now(tz='UTC') - pd.Timedelta(days=lookback_days)).date()
+        cal = _api.get_calendar(start=start_dt.isoformat(), end=end_dt.isoformat())
+        return [pd.to_datetime(c.date).date() for c in cal]
+    except Exception:
+        return []
+
 @st.cache_data(ttl=60)
 def get_account_data(_api):
     account = None
@@ -969,26 +980,30 @@ def calculate_advanced_metrics(hist_df, df_ex=None):
     daily_win_rate = (positive_days / active_days) if active_days > 0 else 0.0
 
     cvar_95 = returns[returns <= returns.quantile(0.05)].mean() * 100 if len(returns) > 20 else 0.0
+    ret_skew = float(skew(active_ret)) if len(active_ret) > 3 else 0.0
+    ret_kurt = float(kurtosis(active_ret)) if len(active_ret) > 3 else 0.0
 
     return {
-        "Total Return": total_return, 
-        "CAGR": cagr, 
+        "Total Return": total_return,
+        "CAGR": cagr,
         "Max Drawdown": max_dd,
         "Max Drawdown Duration": max_dd_duration,
         "Current Underwater Days": current_underwater_days,
-        "Sharpe Ratio": sharpe, 
-        "Sortino Ratio": sortino, 
-        "Calmar Ratio": calmar, 
+        "Sharpe Ratio": sharpe,
+        "Sortino Ratio": sortino,
+        "Calmar Ratio": calmar,
         "MAR Ratio": mar,
         "RoMD": romd,
-        "Market Beta": beta_val, 
-        "Information Ratio": information_ratio, 
-        "Profit Factor": profit_factor, 
+        "Market Beta": beta_val,
+        "Information Ratio": information_ratio,
+        "Profit Factor": profit_factor,
         "Win Rate (Daily)": daily_win_rate,
-        "Trade Hit Rate": trade_hit_rate, 
-        "Expectancy": expectancy, 
+        "Trade Hit Rate": trade_hit_rate,
+        "Expectancy": expectancy,
         "SQN": sqn,
         "CVaR (95%)": cvar_95,
+        "Skewness": ret_skew,
+        "Kurtosis": ret_kurt,
         "Track Record (Months)": months_active,
         "Shadow Record (Months)": shadow_months_active,
         "Trades Taken": trades_taken,
@@ -2316,7 +2331,8 @@ with tab1:
                         except Exception: continue
             return events_list
         except Exception as e:
-            st.cache_data.clear(); st.warning(f"Macro feed disconnected: {e}"); return None
+            st.caption(f"⚠️ Macro calendar feed temporarily unavailable ({e}). Cached for 60m to prevent rate-limit cascades.")
+            return []
 
     @st.cache_data(ttl=3600)
     def fetch_fleet_earnings_calendar(monitored_tickers, _model_health=None, _json_signals=None):
@@ -2653,6 +2669,10 @@ with tab1:
         if positions:
             pos_data = []
             saved_t_states = trading_state.get("trade_states", trading_state) if isinstance(trading_state, dict) else {}
+            trading_days_cal = get_cached_trading_days(api, lookback_days=45)
+            current_dt_utc = pd.Timestamp.now(tz='UTC')
+            current_date_utc = current_dt_utc.date()
+            is_monday_et = (current_dt_utc.tz_convert('US/Eastern').weekday() == 0)
 
             for p in positions:
                 sym = p['symbol']
@@ -2682,21 +2702,19 @@ with tab1:
                 stop_status = f"🏃 {ratchet_tag}" if runner_active else (f"🛡️ {ratchet_tag}" if ratchet_tag != "BASE" else "BASE")
 
                 days_held = 0
-                max_hold_display = 15
+                max_hold_display = 16 if is_monday_et else 15
                 if isinstance(orders, list):
                     for o in orders:
                         if isinstance(o, dict) and o.get('symbol') == sym and o.get('status') == 'filled':
                             filled_at = o.get('filled_at')
                             if filled_at:
-                                try: 
-                                    entry_dt = pd.to_datetime(filled_at).tz_convert('UTC')
-                                    current_dt = pd.Timestamp.now(tz='UTC')
-                                    calendar = api.get_calendar(start=entry_dt.date().isoformat(), end=current_dt.date().isoformat())
-                                    days_held = max(0, len(calendar) - 1)
-                                    us_time = current_dt.tz_convert('US/Eastern')
-                                    if us_time.weekday() == 0:
-                                        max_hold_display = 16
-                                except Exception: pass
+                                try:
+                                    entry_date = pd.to_datetime(filled_at).tz_convert('UTC').date()
+                                    if trading_days_cal:
+                                        sessions = sum(1 for d in trading_days_cal if entry_date <= d <= current_date_utc)
+                                        days_held = max(0, sessions - 1)
+                                except Exception:
+                                    pass
                             break
 
                 pos_data.append({
@@ -3369,26 +3387,34 @@ with tab3:
             st.plotly_chart(fig_dd, width='stretch')
 
         st.divider()
-        st.subheader("⚔️ Long vs. Short Attribution")
-        
-        if isinstance(orders, list) and len(orders) > 0:
-            long_wins, long_losses, short_wins, short_losses = 0, 0, 0, 0
-            for pos in positions:
-                if pos['side'] == 'long':
-                    if float(pos['unrealized_pl']) > 0: long_wins += 1
-                    else: long_losses += 1
-                elif pos['side'] == 'short':
-                    if float(pos['unrealized_pl']) > 0: short_wins += 1
-                    else: short_losses += 1
+        st.subheader("⚔️ Long vs. Short Attribution (Historical Closed + Active)")
 
-            total_longs, total_shorts = long_wins + long_losses, short_wins + short_losses
-            long_wr = (long_wins / total_longs * 100) if total_longs > 0 else 0
-            short_wr = (short_wins / total_shorts * 100) if total_shorts > 0 else 0
-            
-            c_ls1, c_ls2, _spacer = st.columns([1, 1, 4])
-            c_ls1.metric("🟢 Long Win Rate (Active)", f"{long_wr:.1f}%", f"{total_longs} positions", delta_color="off")
-            c_ls2.metric("🔴 Short Win Rate (Active)", f"{short_wr:.1f}%", f"{total_shorts} positions", delta_color="off")
-            st.caption("*Note: Displays active state. Full historical attribution requires database integration.*")
+        c_ls1, c_ls2, c_ls3, c_ls4 = st.columns(4)
+
+        if not df_ex.empty and 'Type' in df_ex.columns:
+            type_upper = df_ex['Type'].astype(str).str.upper()
+            df_longs = df_ex[type_upper == 'LONG']
+            df_shorts = df_ex[type_upper == 'SHORT']
+
+            l_cnt, s_cnt = len(df_longs), len(df_shorts)
+            l_wr = (len(df_longs[df_longs['Result'] == 'Win']) / l_cnt * 100.0) if l_cnt > 0 else 0.0
+            s_wr = (len(df_shorts[df_shorts['Result'] == 'Win']) / s_cnt * 100.0) if s_cnt > 0 else 0.0
+            l_avg = df_longs['PnL (%)'].mean() if l_cnt > 0 else 0.0
+            s_avg = df_shorts['PnL (%)'].mean() if s_cnt > 0 else 0.0
+
+            c_ls1.metric("🟢 Closed Longs Win Rate", f"{l_wr:.1f}%", f"{l_cnt} trades | Avg: {l_avg:+.2f}%", delta_color="off")
+            c_ls2.metric("🔴 Closed Shorts Win Rate", f"{s_wr:.1f}%", f"{s_cnt} trades | Avg: {s_avg:+.2f}%", delta_color="off")
+        else:
+            c_ls1.metric("🟢 Closed Longs Win Rate", "N/A", "No closed history", delta_color="off")
+            c_ls2.metric("🔴 Closed Shorts Win Rate", "N/A", "No closed history", delta_color="off")
+
+        long_pos = [p for p in positions if p.get('side') == 'long'] if positions else []
+        short_pos = [p for p in positions if p.get('side') == 'short'] if positions else []
+        act_l_wr = (sum(1 for p in long_pos if float(p['unrealized_pl']) > 0) / len(long_pos) * 100.0) if long_pos else 0.0
+        act_s_wr = (sum(1 for p in short_pos if float(p['unrealized_pl']) > 0) / len(short_pos) * 100.0) if short_pos else 0.0
+
+        c_ls3.metric("🟢 Active Longs", f"{act_l_wr:.0f}% Green", f"{len(long_pos)} open", delta_color="off")
+        c_ls4.metric("🔴 Active Shorts", f"{act_s_wr:.0f}% Green", f"{len(short_pos)} open", delta_color="off")
 
         st.divider()
         st.markdown("### 🔄 30-Day Rolling Edge (Momentum, Defense & Regime)")

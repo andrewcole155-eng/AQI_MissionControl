@@ -206,12 +206,11 @@ def trigger_remote_ga_evolution(reviewer):
 # 2. DETERMINISTIC CRITERIA MATRIX & EXPLAINABILITY ENGINE (ZERO LLM)
 # ==============================================================================
 def evaluate_criteria_and_explainability(ga_candidate, ga_active):
-    """Deterministically builds the Criteria Evidence Matrix and executive explanation."""
+    """Deterministically builds the V4 Survival-First Criteria Matrix and executive explanation."""
     oos = ga_candidate.get("oos_comparison", {})
     train = ga_candidate.get("train_comparison", {})
     b_st = oos.get("baseline_stats", {})
     e_st = oos.get("evolved_stats", {})
-    inc_st = oos.get("incumbent_stats", b_st)
     has_incumbent = bool(ga_candidate.get("has_active_incumbent", False) or ga_active)
 
     b_fit = float(oos.get("baseline_fitness", 0.0))
@@ -234,30 +233,31 @@ def evaluate_criteria_and_explainability(ga_candidate, ga_active):
     e_folds = ga_candidate.get("rolling_folds", {}).get("evolved", [])
     neg_folds = sum(1 for f in e_folds if float(f.get("fitness", 0.0)) < 0)
 
-    # --- Hard Gates (Preserving Exact Existing Thresholds) ---
-    g1_margin = e_fit - (b_fit + 0.10)
-    g1_pass = e_fit > (b_fit + 0.10)
+    # --- V4 Survival-First Hard Gates ---
+    g1_margin = e_fit - (b_fit + 0.05)
+    g1_pass = e_fit > (b_fit + 0.05)
 
-    g2_margin = (e_dd - (b_dd - 0.02)) * 100.0
-    g2_pass = e_dd >= (b_dd - 0.02)
+    dd_floor = max(b_dd - 0.02, -0.20)
+    g2_margin = (e_dd - dd_floor) * 100.0
+    g2_pass = (e_dd >= (b_dd - 0.02)) and (abs(e_dd) <= 0.20)
 
     g3_margin = e_roll - b_roll
     g3_pass = e_roll >= b_roll
 
     # --- Advisory Checks (Trigger HOLD FOR REVIEW if violated) ---
-    adv_inc_pass = (not has_incumbent) or (e_fit >= inc_fit - 0.05)
+    adv_inc_pass = (not has_incumbent) or (e_fit >= inc_fit - 0.02)
     adv_sample_pass = e_trades >= 10
     adv_conc_pass = (top2_share == 0.0) or (top2_share <= 0.65)
     adv_pin_pass = len(pinned) < 2
     overfit_gap = is_fit - e_fit if train else 0.0
-    adv_overfit_pass = (not train) or (overfit_gap <= 2.5)
+    adv_overfit_pass = (not train) or (overfit_gap <= 0.50)
 
     criteria = [
         {
             "Type": "HARD GATE",
-            "Requirement": "OOS Fitness Improvement",
+            "Requirement": "OOS Survival Fitness Lift",
             "Candidate": f"{e_fit:.3f}",
-            "Threshold": f"> {b_fit + 0.10:.3f} (Base + 0.10)",
+            "Threshold": f"> {b_fit + 0.05:.3f} (Base + 0.05)",
             "Margin": f"{g1_margin:+.3f}",
             "Status": "✅ PASS" if g1_pass else "❌ FAIL",
             "Consequence": "Blocks promotion if failed",
@@ -266,14 +266,14 @@ def evaluate_criteria_and_explainability(ga_candidate, ga_active):
             "Type": "HARD GATE",
             "Requirement": "OOS Max Drawdown Preservation",
             "Candidate": f"{e_dd:.2%}",
-            "Threshold": f">= {b_dd - 0.02:.2%} (Base - 2.0%)",
+            "Threshold": f">= {dd_floor:.2%} (Base - 2% & <=20% Cap)",
             "Margin": f"{g2_margin:+.2f}%",
             "Status": "✅ PASS" if g2_pass else "❌ FAIL",
             "Consequence": "Blocks promotion if failed",
         },
         {
             "Type": "HARD GATE",
-            "Requirement": "3-Fold Rolling Mean Fitness",
+            "Requirement": "Unseen OOS Rolling Fitness",
             "Candidate": f"{e_roll:.3f}",
             "Threshold": f">= {b_roll:.3f} (Baseline)",
             "Margin": f"{g3_margin:+.3f}",
@@ -284,7 +284,7 @@ def evaluate_criteria_and_explainability(ga_candidate, ga_active):
             "Type": "ADVISORY",
             "Requirement": "Beats Active Incumbent (OOS)",
             "Candidate": f"{e_fit:.3f}",
-            "Threshold": f">= {inc_fit:.3f} (Incumbent)" if has_incumbent else "No active incumbent",
+            "Threshold": f">= {inc_fit - 0.02:.3f} (Inc - 0.02)" if has_incumbent else "No active incumbent",
             "Margin": f"{e_fit - inc_fit:+.3f}" if has_incumbent else "N/A",
             "Status": "✅ PASS" if adv_inc_pass else "⚠️ REVIEW",
             "Consequence": "Flags Hold if inferior to live GA",
@@ -302,8 +302,8 @@ def evaluate_criteria_and_explainability(ga_candidate, ga_active):
             "Type": "ADVISORY",
             "Requirement": "IS-to-OOS Generalisation Gap",
             "Candidate": f"{overfit_gap:+.2f}" if train else "Legacy JSON (N/A)",
-            "Threshold": "<= +2.50 fitness drop",
-            "Margin": f"{2.50 - overfit_gap:+.2f}" if train else "N/A",
+            "Threshold": "<= +0.50 fitness drop",
+            "Margin": f"{0.50 - overfit_gap:+.2f}" if train else "N/A",
             "Status": "✅ PASS" if adv_overfit_pass else "⚠️ REVIEW",
             "Consequence": "Signals potential overfitting",
         },
@@ -338,39 +338,41 @@ def evaluate_criteria_and_explainability(ga_candidate, ga_active):
     else:
         verdict = "PROMOTE"
 
-    # Confidence Rating
-    if e_trades >= 20 and ga_candidate.get("timescaledb_signals_loaded", 0) > 0:
+    if e_trades >= 25 and ga_candidate.get("timescaledb_signals_loaded", 0) > 0:
         confidence_label = "🟢 HIGH"
     elif e_trades >= 10:
         confidence_label = "🟡 MODERATE"
     else:
         confidence_label = "🔴 LOW (Small Sample)"
 
-    # Deterministic Executive Explanation
     strengths, risks = [], []
     if e_fit > b_fit:
-        strengths.append(f"OOS fitness improved from {b_fit:.3f} to {e_fit:.3f} (Sortino {float(b_st.get('sortino', 0)):.2f} → {float(e_st.get('sortino', 0)):.2f})")
+        strengths.append(f"OOS survival fitness improved from {b_fit:.3f} to {e_fit:.3f} (Sortino {float(b_st.get('sortino', 0)):.2f} → {float(e_st.get('sortino', 0)):.2f})")
     if e_dd > b_dd:
         strengths.append(f"OOS max drawdown narrowed from {b_dd:.2%} to {e_dd:.2%}")
     if e_roll > b_roll:
-        strengths.append(f"3-fold rolling mean fitness rose from {b_roll:.3f} to {e_roll:.3f}")
+        strengths.append(f"unseen OOS rolling fitness rose from {b_roll:.3f} to {e_roll:.3f}")
 
     if not g1_pass:
-        risks.append(f"failed the +0.10 OOS fitness hurdle (actual lift {e_fit - b_fit:+.3f})")
+        risks.append(f"failed the +0.05 OOS survival fitness hurdle (actual lift {e_fit - b_fit:+.3f})")
     if not g2_pass:
-        risks.append(f"max drawdown deteriorated beyond the 2.0% tolerance ({e_dd:.2%} vs {b_dd:.2%})")
+        risks.append(f"max drawdown ({e_dd:.2%}) violated the 2.0% tolerance or 20.0% absolute cap")
     if not g3_pass:
-        risks.append(f"3-fold rolling fitness ({e_roll:.3f}) underperformed baseline ({b_roll:.3f})")
+        risks.append(f"unseen OOS rolling fitness ({e_roll:.3f}) underperformed baseline ({b_roll:.3f})")
+    if float(e_st.get("profit_factor", 1.0)) < 1.0:
+        risks.append(f"OOS profit factor is below breakeven ({float(e_st.get('profit_factor', 0.0)):.2f})")
     if not adv_sample_pass:
         risks.append(f"OOS trade count is thin ({e_trades} trades), limiting statistical certainty")
     if not adv_conc_pass:
         risks.append(f"top 2 winning trades account for {top2_share:.0%} of OOS gross profit")
     if not adv_inc_pass:
-        risks.append(f"candidate OOS fitness ({e_fit:.3f}) trails the currently active incumbent ({inc_fit:.3f})")
+        risks.append(f"candidate OOS fitness ({e_fit:.3f}) trails the active incumbent ({inc_fit:.3f})")
     if not adv_overfit_pass:
-        risks.append(f"large IS-to-OOS fitness drop ({is_fit:.2f} → {e_fit:.2f}) indicates possible overfitting")
+        risks.append(f"IS-to-OOS fitness drop ({is_fit:.2f} → {e_fit:.2f}) exceeds +0.50 threshold")
+    if not adv_pin_pass:
+        risks.append(f"{len(pinned)} genes pinned at search-space walls ({', '.join(pinned[:3])})")
     if neg_folds >= 2:
-        risks.append(f"{neg_folds} of {len(e_folds)} rolling folds were negative")
+        risks.append(f"{neg_folds} of {len(e_folds)} unseen OOS folds were negative")
 
     why_promote = "; ".join(strengths) if strengths else "No material out-of-sample improvement over static defaults."
     what_wrong = "; ".join(risks) if risks else "No critical fragility flags detected within current OOS sample; monitor live trade frequency after activation."
@@ -503,19 +505,39 @@ def build_rolling_folds_chart(rolling_folds, has_incumbent):
 def build_sensitivity_chart(sensitivity_dict):
     genes = list(sensitivity_dict.keys())
     drops = [float(sensitivity_dict[g].get("max_drop", 0.0)) for g in genes]
-    colors_bar = ["#ff4b4b" if d > 0.75 else ("#ffb000" if d > 0.30 else "#00ff41") for d in drops]
+    colors_bar = ["#ff4b4b" if d > 0.30 else ("#ffb000" if d > 0.12 else "#00ff41") for d in drops]
 
     fig = go.Figure(go.Bar(
         y=genes, x=drops, orientation="h", marker_color=colors_bar,
-        text=[f"-{d:.2f}" for d in drops], textposition="outside"
+        text=[f"-{d:.3f}" for d in drops], textposition="outside"
     ))
     fig.update_layout(
-        title="Local Parameter Fragility (Max OOS Fitness Drop at ±10% Perturbation)",
-        xaxis=dict(title="Worst-Case Fitness Drop (Lower = More Robust)", gridcolor="#333"),
+        title="Local Parameter Fragility (Max Train Fitness Drop at ±10% Perturbation)",
+        xaxis=dict(title="Worst-Case Fitness Drop (Lower = Flatter Optimum)", gridcolor="#333"),
         yaxis=dict(autorange="reversed"),
-        height=360, margin=dict(l=10, r=30, t=40, b=30),
+        height=360, margin=dict(l=10, r=40, t=40, b=30),
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         font=dict(color="#cccccc")
+    )
+    return fig
+
+
+def build_evolution_convergence_chart(evo_telemetry):
+    gens = evo_telemetry.get("generations", [])
+    if not gens:
+        return None
+    df_g = pd.DataFrame(gens)
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=df_g["gen"], y=df_g["best"], mode="lines+markers", name="Best Fitness", line=dict(color="#00ff41", width=2.5)))
+    fig.add_trace(go.Scatter(x=df_g["gen"], y=df_g["median"], mode="lines", name="Median Fitness", line=dict(color="#569cd6", dash="dot", width=2)))
+    fig.update_layout(
+        title=dict(text=f"GA Convergence ({evo_telemetry.get('unique_evals', 0)} Unique Evals | {evo_telemetry.get('cache_hits', 0)} Cache Hits)", y=0.96),
+        xaxis=dict(title="Generation", gridcolor="#333"),
+        yaxis=dict(title="Train Survival Fitness", gridcolor="#333"),
+        height=250, margin=dict(l=10, r=10, t=55, b=30),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#cccccc"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0)
     )
     return fig
 
@@ -613,16 +635,21 @@ def render_ga_governance_panel(candidate_path, active_path):
         """, unsafe_allow_html=True)
 
     with ex_right:
+        src_obj = ga_candidate or ga_active
+        purged_n = src_obj.get("purged_train_windows", 0)
+        runners_n = src_obj.get("train_runners_count", "N/A")
+        cfc_status = "ENABLED" if src_obj.get("cfc_evolution_enabled", False) else "FROZEN / STATIC"
         st.markdown(f"""
         <div style="background:#1e1e1e; border:1px solid #333; border-radius:8px; padding:14px; height:100%;">
             <div style="font-size:13px; font-weight:bold; color:#569cd6; margin-bottom:6px;">
-                🧠 DETERMINISTIC DECISION EXPLAINABILITY (ZERO-LLM RULE ENGINE)
+                🧠 DETERMINISTIC DECISION EXPLAINABILITY (ZERO-LLM V4 RULE ENGINE)
             </div>
             <div style="font-size:12.5px; color:#ddd; line-height:1.55;">
                 <strong>1. Why promote:</strong> {eval_res['why_promote']}<br>
                 <strong>2. What could go wrong:</strong> {eval_res['what_wrong']}<br>
-                <strong>3. Evidence basis:</strong> Evaluated across <strong>{(ga_candidate or ga_active).get('episodes_evaluated', 0)}</strong> chronological Neo4j episodes
-                (<strong>{(ga_candidate or ga_active).get('timescaledb_signals_loaded', 0)}</strong> TimescaleDB signals loaded).
+                <strong>3. Evidence basis:</strong> <strong>{src_obj.get('episodes_evaluated', 0)}</strong> Neo4j episodes
+                (<strong>{src_obj.get('train_windows', 0)}</strong> Train / <strong>{purged_n}</strong> Purged / <strong>{src_obj.get('oos_windows', 0)}</strong> OOS |
+                Runners: <strong>{runners_n}</strong> | CfC: <strong>{cfc_status}</strong>).
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -687,26 +714,32 @@ def render_ga_governance_panel(candidate_path, active_path):
         train = (ga_candidate or {}).get("train_comparison", {})
         r_folds = (ga_candidate or {}).get("rolling_folds", {})
         sens = (ga_candidate or {}).get("parameter_sensitivity", {})
+        evo_tel = (ga_candidate or {}).get("evolution_telemetry", {})
 
         rc1, rc2, rc3 = st.columns(3)
         if train:
             is_f = float(train.get("evolved_fitness", 0.0))
             oo_f = float(oos.get("evolved_fitness", 0.0))
             rc1.metric("In-Sample (Train) Fitness", f"{is_f:.3f}", f"Base IS: {train.get('baseline_fitness', 0.0):.3f}", delta_color="off")
-            rc2.metric("Out-of-Sample Fitness", f"{oo_f:.3f}", f"IS→OOS Gap: {oo_f - is_f:+.3f}", delta_color="normal" if (is_f - oo_f) <= 2.5 else "inverse")
-            rc3.metric("3-Fold Fitness Dispersion (Std)", f"{oos.get('evolved_rolling_std', 0.0):.3f}", f"Base Std: {oos.get('baseline_rolling_std', 0.0):.3f}", delta_color="off")
+            rc2.metric("Out-of-Sample Fitness", f"{oo_f:.3f}", f"IS→OOS Gap: {oo_f - is_f:+.3f}", delta_color="normal" if (is_f - oo_f) <= 0.50 else "inverse")
+            rc3.metric("Unseen OOS Fold Std", f"{oos.get('evolved_rolling_std', 0.0):.3f}", f"Base Std: {oos.get('baseline_rolling_std', 0.0):.3f}", delta_color="off")
 
         g_rob1, g_rob2 = st.columns(2)
         with g_rob1:
             if r_folds.get("evolved"):
                 st.plotly_chart(build_rolling_folds_chart(r_folds, has_inc), width="stretch")
             else:
-                st.info("Re-run `ga_risk_evolver.py` (V3) to populate per-fold walk-forward dispersion.")
+                st.info("Re-run `ga_risk_evolver.py` (V4) to populate unseen OOS fold dispersion.")
         with g_rob2:
             if sens:
                 st.plotly_chart(build_sensitivity_chart(sens), width="stretch")
             else:
-                st.info("Re-run `ga_risk_evolver.py` (V3) to populate ±10% parameter sensitivity diagnostics.")
+                st.info("Re-run `ga_risk_evolver.py` (V4) to populate ±10% parameter sensitivity diagnostics.")
+
+        if evo_tel and evo_tel.get("generations"):
+            fig_conv = build_evolution_convergence_chart(evo_tel)
+            if fig_conv:
+                st.plotly_chart(fig_conv, width="stretch")
 
     with g_tab3:
         rk1, rk2, rk3, rk4, rk5 = st.columns(5)
@@ -714,12 +747,12 @@ def render_ga_governance_panel(candidate_path, active_path):
         rk2.metric("Worst Single Trade", f"{e_st.get('worst_trade_ret', 0.0):.2%}", f"Base: {b_st.get('worst_trade_ret', 0.0):.2%}", delta_color="off")
         rk3.metric("Trade CVaR (95%)", f"{e_st.get('cvar_95_trade', 0.0):.2%}", f"Base: {b_st.get('cvar_95_trade', 0.0):.2%}", delta_color="off")
         rk4.metric("Top-2 Profit Share", f"{e_st.get('top_2_profit_share', 0.0):.0%}", "Fragile if > 65%", delta_color="inverse" if e_st.get("top_2_profit_share", 0.0) > 0.65 else "off")
-        rk5.metric("Max DD Duration", f"{e_st.get('max_dd_duration_trades', 0)} tr", f"Giveback: {e_st.get('avg_giveback_r', 0.0):.2f}R", delta_color="off")
+        rk5.metric("Max DD Duration", f"{e_st.get('max_dd_duration_trades', 0)} tr", f"Ulcer: {e_st.get('ulcer_index', 0.0):.2%} | GB: {e_st.get('avg_giveback_r', 0.0):.2f}R", delta_color="off")
 
         if oos_curves.get("evolved_trade_returns"):
             st.plotly_chart(build_return_distribution_chart(oos_curves), width="stretch")
         else:
-            st.info("Re-run `ga_risk_evolver.py` (V3) to populate OOS trade return distribution plots.")
+            st.info("Re-run `ga_risk_evolver.py` (V4) to populate OOS trade return distribution plots.")
 
     # --------------------------------------------------------------------------
     # D. HUMAN-IN-THE-LOOP GOVERNANCE CONSOLE & AUDIT TRAIL
